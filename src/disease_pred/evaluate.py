@@ -97,6 +97,9 @@ def main() -> dict:
         report, encoding="utf-8")
     print(f"\nwrote {METRICS_PATH.name}")
 
+    from .tracking import log_run
+    log_run(model,X_test)
+
     return {"rows": rows, "table": table, "metrics": metrics,
             "p_test": p_test, "p_oof": p_oof}
 

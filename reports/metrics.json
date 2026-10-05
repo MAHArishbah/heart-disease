@@ -1,13 +1,13 @@
 {
   "threshold": 0.2,
-  "test_auc": 0.891,
-  "test_ap": 0.891,
-  "test_brier": 0.131,
+  "test_auc": 0.892,
+  "test_ap": 0.893,
+  "test_brier": 0.13,
   "test_recall": 0.984,
-  "test_precision": 0.687,
-  "test_f1": 0.809,
-  "test_accuracy": 0.743,
-  "oof_auc": 0.869,
-  "oof_brier": 0.144,
+  "test_precision": 0.691,
+  "test_f1": 0.812,
+  "test_accuracy": 0.748,
+  "oof_auc": 0.871,
+  "oof_brier": 0.143,
   "n_test": 230
 }
