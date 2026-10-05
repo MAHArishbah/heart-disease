@@ -8,6 +8,13 @@ fastapi>=0.110
 uvicorn>=0.27
 pydantic>=2.5
 
+#MlOps
+dvc[gs]==3.67.1
+mlflow==3.16.1
+python-json-logger==4.2.0
+prometheus-client==0.26.0
+google-cloud-bigquery==3.46.1
+
 # Notebooks only (01-eda, 02-diagnostics, 03-shap).
 matplotlib
 seaborn
@@ -15,6 +22,8 @@ statsmodels
 scipy
 shap
 jupyter
+
+
 
 # Tests.
 pytest>=8
