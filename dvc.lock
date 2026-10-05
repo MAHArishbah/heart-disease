@@ -1,0 +1,207 @@
+schema: '2.0'
+stages:
+  train:
+    cmd: python -m disease_pred.train
+    deps:
+    - path: data/raw
+      hash: md5
+      md5: ef774a66085a555e0c884fe6faf7efa5.dir
+      size: 49630
+      nfiles: 5
+    - path: src/disease_pred/config.py
+      hash: md5
+      md5: c46db248e7693a006be163845017e8a4
+      size: 1331
+      isexec: true
+    - path: src/disease_pred/data.py
+      hash: md5
+      md5: 9cedce2e7736a5175a522422647b1a43
+      size: 4907
+      isexec: true
+    - path: src/disease_pred/features.py
+      hash: md5
+      md5: 8c0d1155110e73c66612d50ebf23729c
+      size: 2096
+      isexec: true
+    - path: src/disease_pred/train.py
+      hash: md5
+      md5: 2e1be2e350fcc3f90f3f9fee1068a04a
+      size: 5556
+      isexec: true
+    params:
+      params.yaml:
+        data:
+          raw_dir: data/raw/heart+disease
+          files:
+            cleveland: processed.cleveland.data
+            hungary: processed.hungarian.data
+            switzerland: processed.switzerland.data
+            va: processed.va.data
+          zero_is_missing:
+          - chol
+          - trestbps
+          test_size: 0.25
+        decision:
+          cost_fp: 1.0
+          cost_fn: 4.0
+          target_recall: 0.9
+        features:
+          roles:
+            cont:
+            - age
+            - trestbps
+            - chol
+            - thalach
+            - oldpeak
+            binary:
+            - sex
+            - fbs
+            nominal:
+            - cp
+            - restecg
+            - thal
+            - exang
+            ordinal:
+            - slope
+            - ca
+          missing_indicators:
+          - trestbps
+          - thalach
+          - oldpeak
+          drop_high_missing: true
+          missing_threshold: 0.3
+          include_site: false
+        model:
+          max_iter: 5000
+          cv_folds: 5
+          grid:
+            C_logspace:
+            - -5
+            - 2
+            - 15
+            l1_ratio:
+            - 0.0
+            - 0.25
+            - 0.5
+            - 0.75
+            - 1.0
+        seed: 42
+    outs:
+    - path: models/feature_spec.json
+      hash: md5
+      md5: f07c63af3980a2a8fa0887e106a12eea
+      size: 1045
+      isexec: true
+    - path: models/model.joblib
+      hash: md5
+      md5: 68a837c60eba4ebae22d083774161434
+      size: 5722
+      isexec: true
+    - path: reports/train_metrics.json
+      hash: md5
+      md5: c0d02257d81611777daa09f4515506eb
+      size: 127
+      isexec: true
+  evaluate:
+    cmd: python -m disease_pred.evaluate
+    deps:
+    - path: data/raw
+      hash: md5
+      md5: ef774a66085a555e0c884fe6faf7efa5.dir
+      size: 49630
+      nfiles: 5
+    - path: models/feature_spec.json
+      hash: md5
+      md5: f07c63af3980a2a8fa0887e106a12eea
+      size: 1045
+      isexec: true
+    - path: models/model.joblib
+      hash: md5
+      md5: 68a837c60eba4ebae22d083774161434
+      size: 5722
+      isexec: true
+    - path: src/disease_pred/config.py
+      hash: md5
+      md5: c46db248e7693a006be163845017e8a4
+      size: 1331
+      isexec: true
+    - path: src/disease_pred/data.py
+      hash: md5
+      md5: 9cedce2e7736a5175a522422647b1a43
+      size: 4907
+      isexec: true
+    - path: src/disease_pred/evaluate.py
+      hash: md5
+      md5: 761e475f20765bf8d5fb920d761f4cb8
+      size: 4044
+      isexec: true
+    - path: src/disease_pred/train.py
+      hash: md5
+      md5: 2e1be2e350fcc3f90f3f9fee1068a04a
+      size: 5556
+      isexec: true
+    params:
+      params.yaml:
+        data:
+          raw_dir: data/raw/heart+disease
+          files:
+            cleveland: processed.cleveland.data
+            hungary: processed.hungarian.data
+            switzerland: processed.switzerland.data
+            va: processed.va.data
+          zero_is_missing:
+          - chol
+          - trestbps
+          test_size: 0.25
+        features:
+          roles:
+            cont:
+            - age
+            - trestbps
+            - chol
+            - thalach
+            - oldpeak
+            binary:
+            - sex
+            - fbs
+            nominal:
+            - cp
+            - restecg
+            - thal
+            - exang
+            ordinal:
+            - slope
+            - ca
+          missing_indicators:
+          - trestbps
+          - thalach
+          - oldpeak
+          drop_high_missing: true
+          missing_threshold: 0.3
+          include_site: false
+        model:
+          max_iter: 5000
+          cv_folds: 5
+          grid:
+            C_logspace:
+            - -5
+            - 2
+            - 15
+            l1_ratio:
+            - 0.0
+            - 0.25
+            - 0.5
+            - 0.75
+            - 1.0
+        seed: 42
+    outs:
+    - path: reports/classification_report.txt
+      hash: md5
+      md5: b16857381afba91abc13916dccd63604
+      size: 326
+      isexec: true
+    - path: reports/metrics.json
+      hash: md5
+      md5: 2cd0c293d32b9f5633ee321ff09770a0
+      size: 242
+      isexec: true

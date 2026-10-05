@@ -1,0 +1,44 @@
+
+stages:
+  train:
+    cmd: python -m disease_pred.train
+    deps:
+      - data/raw
+      - src/disease_pred/config.py
+      - src/disease_pred/data.py
+      - src/disease_pred/features.py
+      - src/disease_pred/train.py
+    params:
+      - seed
+      - data
+      - features
+      - model
+      - decision
+    outs:
+      - models/model.joblib
+      - models/feature_spec.json
+    metrics:
+      - reports/train_metrics.json:
+          cache: false
+
+  evaluate:
+    cmd: python -m disease_pred.evaluate
+    deps:
+      - data/raw
+      - models/model.joblib
+      - models/feature_spec.json
+      - src/disease_pred/config.py
+      - src/disease_pred/data.py
+      - src/disease_pred/train.py
+      - src/disease_pred/evaluate.py
+    params:
+      - seed
+      - data
+      - features
+      - model
+    metrics:
+      - reports/metrics.json:
+          cache: false
+    outs:
+      - reports/classification_report.txt:
+          cache: false
