@@ -73,7 +73,7 @@ stages:
           include_site: false
         model:
           max_iter: 5000
-          cv_folds: 10
+          cv_folds: 5
           grid:
             C_logspace:
             - -5
@@ -89,18 +89,18 @@ stages:
     outs:
     - path: models/feature_spec.json
       hash: md5
-      md5: 64f6c3fd1dbe92f89356fa4fdce11d38
-      size: 1046
+      md5: f07c63af3980a2a8fa0887e106a12eea
+      size: 1045
       isexec: true
     - path: models/model.joblib
       hash: md5
-      md5: c10807ea72e5f2d6a28593d5ec8e6935
+      md5: 68a837c60eba4ebae22d083774161434
       size: 5722
       isexec: true
     - path: reports/train_metrics.json
       hash: md5
-      md5: cb394b1ceac28518619ed8d054d8dee6
-      size: 129
+      md5: c0d02257d81611777daa09f4515506eb
+      size: 127
       isexec: true
   evaluate:
     cmd: python -m disease_pred.evaluate
@@ -112,12 +112,12 @@ stages:
       nfiles: 5
     - path: models/feature_spec.json
       hash: md5
-      md5: 64f6c3fd1dbe92f89356fa4fdce11d38
-      size: 1046
+      md5: f07c63af3980a2a8fa0887e106a12eea
+      size: 1045
       isexec: true
     - path: models/model.joblib
       hash: md5
-      md5: c10807ea72e5f2d6a28593d5ec8e6935
+      md5: 68a837c60eba4ebae22d083774161434
       size: 5722
       isexec: true
     - path: src/disease_pred/config.py
@@ -186,7 +186,7 @@ stages:
           include_site: false
         model:
           max_iter: 5000
-          cv_folds: 10
+          cv_folds: 5
           grid:
             C_logspace:
             - -5
@@ -202,11 +202,11 @@ stages:
     outs:
     - path: reports/classification_report.txt
       hash: md5
-      md5: 4a7c3e06c0922c2bc757f0ec6896941f
+      md5: b16857381afba91abc13916dccd63604
       size: 326
       isexec: true
     - path: reports/metrics.json
       hash: md5
-      md5: c859679ce21ee4cfa9d7e25a7ed3da8f
-      size: 241
+      md5: 2cd0c293d32b9f5633ee321ff09770a0
+      size: 242
       isexec: true
