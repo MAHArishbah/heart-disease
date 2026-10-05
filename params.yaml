@@ -1,0 +1,41 @@
+seed: 42
+
+data:
+  raw_dir: data/raw/heart+disease
+  files:
+    cleveland: processed.cleveland.data
+    hungary: processed.hungarian.data
+    switzerland: processed.switzerland.data
+    va: processed.va.data
+  # Physiologically impossible zeros -> NaN 
+  zero_is_missing: [chol, trestbps]
+  test_size: 0.25
+
+features:
+  # Roles assigned by hand (cell 23)-- cardinality binning could not
+  # distinguish nominal from ordinal, so these are declared, not inferred.
+  # (cell 22 comment justifies declaring them.)
+  roles:
+    cont: [age, trestbps, chol, thalach, oldpeak]
+    binary: [sex, fbs]
+    nominal: [cp, restecg, thal, exang]
+    ordinal: [slope, ca]
+  missing_indicators: [trestbps, thalach, oldpeak]
+  drop_high_missing: true
+  missing_threshold: 0.3
+  include_site: false
+
+model:
+  max_iter: 5000            # base logreg; the elasticnet fit uses 4x this
+  cv_folds: 5
+  grid:
+    C_logspace: [-5, 2, 15]      # np.logspace(start, stop, num)
+    l1_ratio: [0.0, 0.25, 0.5, 0.75, 1.0]
+
+decision:
+  # Cost-optimal threshold = C_FP / (C_FP + C_FN). Cell 51.
+  # Changing these re-triggers training: the threshold is a fitted artifact,
+  # not a constant, and is written into models/feature_spec.json.
+  cost_fp: 1.0
+  cost_fn: 4.0
+  target_recall: 0.9        # only used by the 02-diagnostics comparison
