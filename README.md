@@ -153,3 +153,5 @@ not just five.
 All 90 original cells are accounted for; see `docs/cell_map.md`. Cells 62, 85
 and 89 were empty and are deleted (noted in place in the notebooks). Cells 34
 and 51 each split across two destinations; everything else moved whole.
+
+CI: every pull request reruns the DVC pipeline, the tests and a metrics diff against main.
