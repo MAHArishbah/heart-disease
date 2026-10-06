@@ -49,6 +49,46 @@ app = FastAPI(
     version="1.0.0",
 )
 
+import logging,time,uuid
+from contextvars import ContextVar
+from fastapi import Request
+
+from .logging_conf import configure_logging
+from .predlog import record
+
+
+configure_logging()
+log=logging.getLogger("disease_pred.serve")
+
+request_id_var:ContextVar[str]=ContextVar("request_id",default="-")
+
+@app.middleware("http")
+async def access_log(request: Request,call_next):
+    request_id= request.headers.get("x-request-id") or uuid.uuid4().hex
+    token=request_id_var.set(request_id)
+    started=time.perf_counter()
+    status=500
+    try:
+        response=await call_next(request)
+        status=response.status_code      
+        response.headers["x-request-id"] = request_id
+        response.headers["x-model-version"] = MODEL_VERSION
+        return response
+    except Exception:
+        log.exception("unhandled error",extra={"request_id":request_id})
+        raise
+    finally:
+        log.info("request", extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": status,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+        })
+        request_id_var.reset(token)
+
+
+
 _MODEL: Any = None
 _SPEC: dict | None = None
 
@@ -130,6 +170,7 @@ def predict_frame(frame: pd.DataFrame) -> list[Prediction]:
     model, spec = load_artifacts()
     threshold = spec["threshold"]
     probabilities = model.predict_proba(frame)[:, 1]
+    record(request_id_var.get(),frame,probabilities,threshold,MODEL_VERSION)
     return [
         Prediction(
             probability=round(float(p), 4),
