@@ -43,7 +43,7 @@ stages:
           test_size: 0.25
         decision:
           cost_fp: 1.0
-          cost_fn: 4.0
+          cost_fn: 5.0
           target_recall: 0.9
         features:
           roles:
@@ -89,8 +89,8 @@ stages:
     outs:
     - path: models/feature_spec.json
       hash: md5
-      md5: f07c63af3980a2a8fa0887e106a12eea
-      size: 1045
+      md5: 9cfae8d2745b53cc70a68ea3d2d7e609
+      size: 1061
       isexec: true
     - path: models/model.joblib
       hash: md5
@@ -99,8 +99,8 @@ stages:
       isexec: true
     - path: reports/train_metrics.json
       hash: md5
-      md5: c0d02257d81611777daa09f4515506eb
-      size: 127
+      md5: 657e0181f54c9843ae79e85510429980
+      size: 143
       isexec: true
   evaluate:
     cmd: python -m disease_pred.evaluate
@@ -112,8 +112,8 @@ stages:
       nfiles: 5
     - path: models/feature_spec.json
       hash: md5
-      md5: f07c63af3980a2a8fa0887e106a12eea
-      size: 1045
+      md5: 9cfae8d2745b53cc70a68ea3d2d7e609
+      size: 1061
       isexec: true
     - path: models/model.joblib
       hash: md5
@@ -202,11 +202,11 @@ stages:
     outs:
     - path: reports/classification_report.txt
       hash: md5
-      md5: b16857381afba91abc13916dccd63604
+      md5: 5a62d0b8b6581ebcdbb6147b129f2fd7
       size: 326
       isexec: true
     - path: reports/metrics.json
       hash: md5
-      md5: 2cd0c293d32b9f5633ee321ff09770a0
-      size: 242
+      md5: 6438f6ec221384c908c58e1a7e3e9e8d
+      size: 257
       isexec: true

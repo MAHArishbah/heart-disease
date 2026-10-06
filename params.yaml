@@ -37,5 +37,5 @@ decision:
   # Changing these re-triggers training: the threshold is a fitted artifact,
   # not a constant, and is written into models/feature_spec.json.
   cost_fp: 1.0
-  cost_fn: 4.0
+  cost_fn: 5.0
   target_recall: 0.9        # only used by the 02-diagnostics comparison
