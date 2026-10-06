@@ -213,3 +213,12 @@ def test_higher_risk_profile_scores_higher(client):
         "age": 68, "sex": 1, "cp": 4, "thalach": 105, "exang": 1, "oldpeak": 3.2,
     }).json()["probability"]
     assert high > low
+
+def test_live_does_not_depend_on_model(client):
+    body=client.get("/live").json()
+    assert body == {'status':'alive'}
+
+def test_health_reports_the_model_version(client):
+    body=client.get('/health').json()
+    assert body['model_version']== serve.MODEL_VERSION
+
