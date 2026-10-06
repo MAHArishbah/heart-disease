@@ -12,4 +12,4 @@ Module map (see docs/notebook-refactor-map.pdf for the cell-by-cell version):
 The rule that keeps this honest: notebooks import from here, never the reverse.
 """
 
-__all__ = ["config", "data", "features", "train", "evaluate"]
+__all__ = ["config", "data", "features", "train", "evaluate","tracking","logging_conf"]
