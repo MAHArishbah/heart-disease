@@ -2,7 +2,7 @@ import json
 import os
 import subprocess
 import yaml
-from .config import METRICS_PATH,PARAMS,PROJECT_ROOT,SPEC_PATH,TRAIN_METRICS_PATH
+from .config import METRICS_PATH,PARAMS,PROJECT_ROOT,SPEC_PATH,TRAIN_METRICS_PATH,MODEL_PATH
 
 EXPERIMENT='heart-disease'
 REGISTERED_NAME= "heart-disease-logreg"
@@ -55,6 +55,7 @@ def log_run(model,X_example) -> str |None:
         mlflow.set_tags({"git_sha":sha,"dvc_data_md5":_data_md5(),'threshold':spec['threshold']})
 
         mlflow.log_artifact(str(SPEC_PATH))
+        mlflow.log_artifact(str(MODEL_PATH))
         mlflow.log_artifact(str(METRICS_PATH.parent / "classification_report.txt"))
 
         signature=infer_signature(X_example,model.predict_proba(X_example))
