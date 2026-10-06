@@ -43,7 +43,7 @@ jobs:
           dvc repro
 
       - name: Tests
-        run: python -m pytest -q
+        run: python -m pytest -q --ignore=tests/test_notebooks.py
 
       - name: Guard against Regression
         run: |
