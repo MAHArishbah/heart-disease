@@ -1,0 +1,12 @@
+fastapi==0.142.2
+google-cloud-bigquery==3.46.1
+joblib==1.6.0
+numpy==2.5.3
+pandas==3.0.6
+prometheus_client==0.26.0
+pydantic==2.13.5
+python-json-logger==4.2.0
+PyYAML==6.0.3
+scikit-learn==1.9.1
+scipy==1.18.1
+uvicorn==0.54.0

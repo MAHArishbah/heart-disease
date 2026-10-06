@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+.dvc
+.pytest_cache
+**/__pycache__
+*.pyc
+src/*.egg-info
+data
+notebooks
+tests
+reports
+ui
+k8s
+report.md
