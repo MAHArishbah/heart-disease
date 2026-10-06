@@ -1,0 +1,78 @@
+#no mention of Mlflow and since MLFLOW_TRACKING_URI is not set in git machine, the job will not try to log to mlflow
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write  # lets the job mint the token WIF exchanges
+  pull-requests: write # lets CML comment on the PR
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history, so origin/main exists to diff against
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.14 #wsl minor version
+          cache: "pip"
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{vars.WIF_PROVIDER}}
+          service_account: ${{vars.WIF_SERVICE_ACCOUNT}}
+
+      - uses: iterative/setup-cml@v2
+        with:
+          version: latest
+
+      - name: Install #no deps in -e because requirements.txt already has them
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e . --no-deps   
+
+      - name: Pull data and reproduce
+        run: |
+          dvc pull data/raw
+          dvc repro
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Guard against Regression
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          new = json.load(open("reports/metrics.json"))["test_auc"]
+          try:
+              old = json.loads(subprocess.check_output(
+                  ["git", "show", "origin/main:reports/metrics.json"]))["test_auc"]
+          except subprocess.CalledProcessError:
+              print("no metrics on main yet; skipping the gate")
+              sys.exit(0)
+          print(f"test_auc main={old:.3f} pr={new:.3f}")
+          if new < old - 0.02:
+              sys.exit(f"test_auc fell by more than 0.02 ({old:.3f} -> {new:.3f})")
+          PY
+
+      - name: Post model report 
+        if: always()
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "## Model report"
+            echo
+            echo "### Metrics vs main"
+            dvc metrics diff origin/main --md
+            echo
+            echo "### Params changed"
+            dvc params diff origin/main --md
+          } > report.md
+          cml comment create report.md
