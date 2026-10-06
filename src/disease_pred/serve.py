@@ -22,8 +22,9 @@ the service serves.
 
 from __future__ import annotations
 
-import json
+import json,os
 from typing import Any
+from contextlib import asynccontextmanager
 
 import joblib
 import pandas as pd
@@ -32,6 +33,15 @@ from pydantic import BaseModel, ConfigDict, Field,field_validator
 
 from .config import MODEL_PATH, SPEC_PATH
 from .data import apply_zero_rules
+
+MODEL_VERSION=os.getenv("MODEL_VERSION","dev")
+REQUIRE_MODEL=os.getenv("REQUIRE_MODEL","0")=="1"
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if REQUIRE_MODEL:
+        load_artifacts()
+    yield
 
 app = FastAPI(
     title="Heart disease risk",
@@ -130,6 +140,11 @@ def predict_frame(frame: pd.DataFrame) -> list[Prediction]:
         for p in probabilities
     ]
 
+@app.get("/live")
+def live() ->dict:
+    """Liveness: the process is up. Deliberately checks nothing else."""
+    return {'status':'alive'}
+
 
 @app.get("/health")
 def health() -> dict:
@@ -142,6 +157,7 @@ def health() -> dict:
         "threshold": spec["threshold"],
         "n_features": len(spec["features"]),
         "trained_at": spec.get("trained_at"),
+        "model_version":MODEL_VERSION,
     }
 
 
