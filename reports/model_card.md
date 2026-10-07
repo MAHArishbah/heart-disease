@@ -3,6 +3,12 @@
 Cost-weighted screening model over the UCI heart-disease battery (four sites).
 Sources: notebook cells 12, 50, 53, 63-67, 78.
 
+Performance and threshold numbers come from the DVC pipeline output
+(`reports/metrics.json`, `reports/train_metrics.json`,
+`reports/classification_report.txt`). Sections marked *diagnostics* come from
+`notebooks/02-diagnostics.ipynb`, which was not re-run after the missing
+indicator list was narrowed to `trestbps, thalach, oldpeak`.
+
 | | |
 |---|---|
 | Task | binary classification, `target = num > 0` |
@@ -31,28 +37,32 @@ training rows. The threshold lives in `params.yaml` (`features.missing_threshold
 
 Missing values are expected and handled by the fitted pipeline (median for
 continuous, most-frequent for categorical), plus a `MissingIndicator` block on
-the numeric and binary columns. `chol = 0` and `trestbps = 0` are treated as
+the three declared columns `trestbps, thalach, oldpeak`
+(`features.missing_indicators` in `params.yaml`). Indicators for `chol` and
+`fbs` were deliberately left out: in the diagnostics they acted as site proxies
+rather than clinical signal (see *Limitations*). `chol = 0` and `trestbps = 0` are treated as
 missing, not as measurements - they are physiologically impossible.
 
 ## Performance
 
 | metric | out-of-fold (n=688) | test (n=230) |
 |---|---|---|
-| ROC AUC | 0.881 | 0.912 |
-| Average precision | 0.883 | 0.920 |
-| Brier | 0.136 | 0.118 |
-| Recall @ t=0.20 | 0.969 | 0.984 |
-| Precision @ t=0.20 | 0.690 | 0.698 |
+| ROC AUC | 0.869 | 0.891 |
+| Average precision | 0.873 | 0.891 |
+| Brier | 0.144 | 0.131 |
+| Recall @ t=0.20 | 0.971 | 0.984 |
+| Precision @ t=0.20 | 0.684 | 0.687 |
 
-**Report the out-of-fold number (~0.88 AUC), not the test number (0.91).** Test
+**Report the out-of-fold number (~0.87 AUC), not the test number (0.89).** Test
 beats OOF on every metric, which is unusual. Site composition was checked and
 does not explain it (Switzerland is *over*-represented in test, 15.2% vs 12.8%,
 which should make test harder). The likelier explanation is sampling variance
 on a smaller single split - nested CV showed AUC std ~0.02 across folds of
 similar size. OOF is the lower-variance estimate of the two.
 
-Nested CV log-loss 0.4406 +/- 0.0368 against a single-split 0.4376, so the
-tuning estimate is not optimistically biased and is reportable.
+Nested CV log-loss (diagnostics) was 0.4406 +/- 0.0368; the current
+pipeline's tuning CV log-loss is 0.450 (`reports/train_metrics.json`), inside
+that band, so the tuning estimate is not optimistically biased.
 
 ## Threshold: 0.20, and why
 
@@ -63,8 +73,8 @@ the Bayes-optimal cut under that cost, not the symmetric F1 peak (which was
 number rather than a cost estimate.
 
 The rule is only meaningful if the probabilities are calibrated, not merely
-well-ranked. That was checked twice: OOF Brier 0.136 against a no-skill
-baseline of 0.247 (~45% Brier skill score), and reliability diagrams on both
+well-ranked. That was checked twice: OOF Brier 0.144 against a no-skill
+baseline of 0.247 (~42% Brier skill score), and reliability diagrams (diagnostics) on both
 OOF and test that track the diagonal - tightest in the high-probability bins,
 which are the ones the decision actually depends on.
 
@@ -76,21 +86,21 @@ in `params.yaml`; changing it re-triggers training.
 
 | | precision | recall | support |
 |---|---|---|---|
-| no disease | 0.961 | **0.476** | 103 |
-| disease | 0.698 | **0.984** | 127 |
+| no disease | 0.958 | **0.447** | 103 |
+| disease | 0.687 | **0.984** | 127 |
 
-Confusion matrix: TN=49, FP=54, FN=2, TP=125.
+Confusion matrix: TN=46, FP=57, FN=2, TP=125.
 
-Two of 127 diseased patients are missed; 54 of 103 healthy patients are
+Two of 127 diseased patients are missed; 57 of 103 healthy patients are
 flagged. That asymmetry *is* the 4:1 cost ratio, working as specified. The
-macro average (0.730) hides it - **quote the per-class numbers**, not the
+macro-average F1 (0.709) hides it - **quote the per-class numbers**, not the
 average, to a non-technical audience.
 
 ## Limitations
 
 ### Cross-site generalisation is the main one
 
-Leave-one-site-out CV:
+Leave-one-site-out CV (diagnostics):
 
 | held-out site | AUC | AP |
 |---|---|---|
@@ -104,17 +114,19 @@ and VA drop to ~0.70-0.71, outside the nested-CV std band - a real
 generalisation gap, not noise. (Switzerland's AP of 0.961 looks strong but is a
 base-rate artifact of 93% prevalence; AUC is the fair read there.)
 
-**So the headline ~0.88 AUC is an in-distribution estimate for a
+**So the headline ~0.87 AUC is an in-distribution estimate for a
 Cleveland/Hungary-like workup. Expect closer to 0.70-0.75 at a genuinely new
 site whose data is collected like Switzerland's or VA's.**
 
 ### Missingness is informative, and partly encodes site
 
 Missingness rates and prevalence both vary strongly by site and move together
-at Switzerland and VA, so the data is not MCAR. `missingindicator_chol` and
-`missingindicator_fbs` carry large coefficients - the model is partly learning
-"this field is absent -> probably a site that only enrolled diseased patients".
-Three independent signals agree on this:
+at Switzerland and VA, so the data is not MCAR. In the diagnostics,
+`missingindicator_chol` and `missingindicator_fbs` carried large coefficients -
+the model was partly learning "this field is absent -> probably a site that
+only enrolled diseased patients". Those two indicators are therefore **not** in
+the served model; the remaining three (`trestbps, thalach, oldpeak`) are.
+Three independent signals pointed at the problem:
 
 1. the LOGO gap above;
 2. OR confidence intervals - `missingindicator_fbs` has the largest point
@@ -124,10 +136,10 @@ Three independent signals agree on this:
    leverage cutoffs, and several of them are rows missing several fields at
    once.
 
-Report those two odds ratios with the site-confound caveat attached, never as
-standalone clinical findings.
+If those two odds ratios are ever quoted from the diagnostics notebook, attach
+the site-confound caveat; never present them as standalone clinical findings.
 
-### On the inference numbers
+### On the inference numbers (diagnostics)
 
 Coefficients, ORs, p-values and LR tests come from a separate statsmodels
 design (`Zc_inf`), which collapses the three VA-battery missingness indicators
@@ -171,9 +183,12 @@ own.
 ## Reproducing
 
 ```
+dvc repro                         # runs both stages below, skipping unchanged ones
 python -m disease_pred.train      # -> models/, reports/train_metrics.json
-python -m disease_pred.evaluate   # -> reports/metrics.json
+python -m disease_pred.evaluate   # -> reports/metrics.json, classification_report.txt
 ```
 
-Seed 42 throughout. Every number above came from those two commands and
-`notebooks/02-diagnostics.ipynb`.
+Seed 42 throughout. Every number above came from those commands, except the
+sections marked *diagnostics*, which came from `notebooks/02-diagnostics.ipynb`.
+The OOF average precision, recall and precision are printed by
+`python -m disease_pred.evaluate` but not written to `metrics.json`.

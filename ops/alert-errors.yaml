@@ -1,0 +1,25 @@
+displayName: heart-disease 5xx rate
+combiner: OR
+conditions:
+  - displayName: more than 1 error per minute for 5 minutes
+    conditionThreshold:
+      filter: >-
+        metric.type="logging.googleapis.com/user/predict_errors"
+        AND resource.type="cloud_run_revision"
+      comparison: COMPARISON_GT
+      thresholdValue: 0.0167
+      duration: 300s
+      aggregations:
+        - alignmentPeriod: 60s
+          perSeriesAligner: ALIGN_RATE
+
+notificationChannels:
+  - projects/heart-disease-mlops-510711/notificationChannels/2641778709027823063
+documentation:
+  mimeType: text/markdown
+  content: |
+    The heart-disease API is returning 5xx errors (more than 1 per minute for 5 minutes).
+    1. Logs Explorer: resource.labels.service_name="heart-disease" AND jsonPayload.status>=500
+    2. Check whether a new revision was just deployed; if so, roll back:
+       gcloud run services update-traffic heart-disease --region=asia-south1 --to-revisions=<previous>=100
+    3. Check /health on the service: a 503 means the model failed to load.
