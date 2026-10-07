@@ -19,6 +19,7 @@ COPY params.yaml ./params.yaml
 COPY src ./src
 # COPY models/model.joblib models/feature_spec.json ./models/
 COPY build/model/model.joblib build/model/feature_spec.json ./models/
+COPY models/reference.csv ./models/
 
 USER appuser
 EXPOSE 8080

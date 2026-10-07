@@ -25,7 +25,8 @@ def configure_logging()->None:
     root.setLevel(os.getenv("LOG_LEVEL","INFO"))
 
     #uvicorn installs its own handlers, routing them through here
-    for name in ("uvicorn","uvicorn.eroor","uvicorn.access"):
+    for name in ("uvicorn","uvicorn.error"):
         logging.getLogger(name).handlers=[handler]
         logging.getLogger(name).propagate=False
+    logging.getLogger("uvicorn.access").disabled=True #disables the uvicorn access logs 
 

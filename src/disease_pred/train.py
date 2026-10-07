@@ -125,6 +125,7 @@ def main() -> dict:
     # print(feature_names)
 
     joblib.dump(final_model, MODEL_PATH)
+    X_train.to_csv(MODEL_PATH.parent / "reference.csv", index=False) #for drift detection
     SPEC_PATH.write_text(json.dumps(feature_spec, indent=2), encoding="utf-8")
 
     train_metrics = {

@@ -25,8 +25,8 @@ stages:
       isexec: true
     - path: src/disease_pred/train.py
       hash: md5
-      md5: 2e1be2e350fcc3f90f3f9fee1068a04a
-      size: 5556
+      md5: a4d1d0689bf501c04a5e7cafe90f8189
+      size: 5646
       isexec: true
     params:
       params.yaml:
@@ -89,13 +89,18 @@ stages:
     outs:
     - path: models/feature_spec.json
       hash: md5
-      md5: f07c63af3980a2a8fa0887e106a12eea
+      md5: 71d5bb9d3b52d375a2369e069e2cf85a
       size: 1045
       isexec: true
     - path: models/model.joblib
       hash: md5
       md5: 68a837c60eba4ebae22d083774161434
       size: 5722
+      isexec: true
+    - path: models/reference.csv
+      hash: md5
+      md5: ee1ec665a58078e4c646c41727bba8e3
+      size: 30659
       isexec: true
     - path: reports/train_metrics.json
       hash: md5
@@ -112,7 +117,7 @@ stages:
       nfiles: 5
     - path: models/feature_spec.json
       hash: md5
-      md5: f07c63af3980a2a8fa0887e106a12eea
+      md5: 71d5bb9d3b52d375a2369e069e2cf85a
       size: 1045
       isexec: true
     - path: models/model.joblib
@@ -142,8 +147,8 @@ stages:
       isexec: true
     - path: src/disease_pred/train.py
       hash: md5
-      md5: 2e1be2e350fcc3f90f3f9fee1068a04a
-      size: 5556
+      md5: a4d1d0689bf501c04a5e7cafe90f8189
+      size: 5646
       isexec: true
     params:
       params.yaml:

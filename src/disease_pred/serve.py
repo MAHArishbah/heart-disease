@@ -56,6 +56,16 @@ from fastapi import Request
 from .logging_conf import configure_logging
 from .predlog import record
 
+from fastapi import Response
+from prometheus_client import CONTENT_TYPE_LATEST,generate_latest
+from .metrics import FLAGGED,LATENCY,REQUESTS,SCORE
+
+SCORED_PATHS={"/predict","/predict_batch"}
+
+@app.get("/metrics",include_in_schema=False)
+def prometheus_metrics() -> Response:
+    return Response(generate_latest(),media_type=CONTENT_TYPE_LATEST)
+
 
 configure_logging()
 log=logging.getLogger("disease_pred.serve")
@@ -85,7 +95,12 @@ async def access_log(request: Request,call_next):
             "status": status,
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
         })
+        if request.url.path in SCORED_PATHS:
+            REQUESTS.labels(request.url.path,str(status),MODEL_VERSION).inc()
+            LATENCY.labels(request.url.path).observe(time.perf_counter()-started)
         request_id_var.reset(token)
+
+
 
 
 
@@ -171,6 +186,9 @@ def predict_frame(frame: pd.DataFrame) -> list[Prediction]:
     threshold = spec["threshold"]
     probabilities = model.predict_proba(frame)[:, 1]
     record(request_id_var.get(),frame,probabilities,threshold,MODEL_VERSION)
+    for p in probabilities:
+        SCORE.observe(float(p))
+    FLAGGED.inc(int((probabilities >= threshold).sum()))
     return [
         Prediction(
             probability=round(float(p), 4),
