@@ -60,7 +60,11 @@ def jitter(p: dict, rng: random.Random) -> dict:
     q = dict(p)
     for f, (lo, hi, step) in NUMERIC.items():
         if f in q:
+            if f == "oldpeak" and q[f] == 0:
+                continue                                        # ~40% of patients sit exactly at 0: keep that spike intact
             v = q[f] + rng.uniform(-step, step)
+            if f == "oldpeak" and q[f] > 0:
+                v = max(v, 0.1)                                 # a positive reading stays positive
             v = min(max(v, lo), hi)
             q[f] = round(v, 1) if f == "oldpeak" else int(round(v))
     if "thalach" in q:                                          # cross-field rule: thalach <= 260 - age
