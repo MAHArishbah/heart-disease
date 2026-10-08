@@ -131,7 +131,7 @@ class Patient(BaseModel):
     rejected -- the reindex below is what decides the design matrix.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     #required
     age: float = Field(ge=18, le=120, description="years; required")

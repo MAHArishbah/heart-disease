@@ -76,13 +76,12 @@ def test_to_frame_turns_impossible_zeros_into_nan(artifacts):
     assert np.isnan(frame.loc[0, "trestbps"])
 
 
-def test_unexpected_payload_key_cannot_reach_the_design_matrix(artifacts):
-    _, spec = artifacts
-    patient = serve.Patient.model_validate(
-        {"age": 54, "sex": 1, "surprise_column": 999})
-    frame = serve.to_frame([patient], spec)
-    assert "surprise_column" not in frame.columns
-    assert list(frame.columns) == spec["features"]
+from pydantic import ValidationError
+from disease_pred.serve import Patient
+
+def test_unexpected_payload_key_cannot_reach_the_design_matrix():
+    with pytest.raises(ValidationError, match="bogus"):
+        Patient(age=55, sex=1, bogus=1)
 
 
 def test_dropped_high_missing_columns_are_not_requested(artifacts):
@@ -263,3 +262,8 @@ def test_invalid_model_output_returns_500(client, monkeypatch):
     monkeypatch.setattr(serve, "_MODEL", _BrokenModel())
     r = client.post("/predict", json={"age": 55, "sex": 1})
     assert r.status_code == 500
+
+def test_unknown_field_is_rejected(client):
+    r = client.post("/predict", json={"age": 55, "sex": 1, "thalch": 150})   # misspelled thalach
+    assert r.status_code == 422
+    assert "thalch" in r.text

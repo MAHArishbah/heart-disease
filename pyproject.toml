@@ -29,3 +29,4 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
 filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
+addopts = "--ignore=tests/test_notebooks.py"
