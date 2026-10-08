@@ -1,0 +1,101 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-heart-disease
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: heart-disease-mlops-510711
+  REGION: asia-south1
+  SERVICE: heart-disease
+  JOB: drift-check
+  REPO: ml-images
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Fetch the model files this commit pins
+        run: |
+          pip install "$(grep -iE '^dvc(\[|=)' requirements.txt)"
+          dvc pull train
+          mkdir -p build/model
+          cp models/model.joblib models/feature_spec.json build/model/
+          ls -l build/model models/reference.csv
+          md5sum build/model/model.joblib
+
+      - name: Build and push the image
+        run: |
+          TAG=$(git rev-parse --short HEAD)-dvc
+          IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:$TAG
+          gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+          docker build --pull -t $IMAGE .
+          docker push $IMAGE
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Remember the revision serving now
+        run: |
+          echo "PREV=$(gcloud run services describe $SERVICE --region=$REGION \
+            --format='value(status.traffic[0].revisionName)')" >> $GITHUB_ENV
+
+      - name: Deploy the service and route all traffic to it
+        run: |
+          gcloud run deploy $SERVICE \
+            --image=$IMAGE \
+            --region=$REGION \
+            --service-account=sa-serving@$PROJECT_ID.iam.gserviceaccount.com \
+            --set-env-vars=MODEL_VERSION=$TAG,LOG_LEVEL=INFO,PREDICTIONS_TABLE=$PROJECT_ID.serving.predictions \
+            --cpu=1 --memory=512Mi \
+            --min-instances=0 --max-instances=4 \
+            --concurrency=40 --timeout=30s \
+            --no-allow-unauthenticated
+          gcloud run services update-traffic $SERVICE --region=$REGION --to-latest
+          echo "URL=$(gcloud run services describe $SERVICE --region=$REGION --format='value(status.url)')" >> $GITHUB_ENV
+
+      - id: idtoken
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_DEPLOY_SA }}
+          token_format: id_token
+          id_token_audience: ${{ env.URL }}
+          id_token_include_email: true
+
+      - name: Smoke test
+        run: |
+          AUTH="Authorization: Bearer ${{ steps.idtoken.outputs.id_token }}"
+          curl -fsS -H "$AUTH" $URL/health
+          curl -fsS -H "$AUTH" $URL/metrics > /dev/null
+          curl -fsS -H "$AUTH" -H 'content-type: application/json' \
+            -d '{"age": 55, "sex": 1}' $URL/predict
+
+      - name: Point the drift job at the new image
+        run: gcloud run jobs update $JOB --region=$REGION --image=$IMAGE
+
+      - name: Roll back the service if anything failed after the deploy
+        if: failure() && env.PREV != ''
+        run: |
+          gcloud run services update-traffic $SERVICE --region=$REGION --to-revisions=$PREV=100
