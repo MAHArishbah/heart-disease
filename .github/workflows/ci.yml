@@ -61,7 +61,7 @@ jobs:
               sys.exit(f"test_auc fell by more than 0.02 ({old:.3f} -> {new:.3f})")
           PY
 
-      - name: Post model report 
+      - name: Post model report #changed to always comment on PR even if there is no change in metrics
         if: always()
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -70,9 +70,9 @@ jobs:
             echo "## Model report"
             echo
             echo "### Metrics vs main"
-            dvc metrics diff origin/main --md
+            dvc metrics diff origin/main --all --precision 4 --md
             echo
-            echo "### Params changed"
-            dvc params diff origin/main --md
+            echo "### Params vs main"
+            dvc params diff origin/main --all --md
           } > report.md
           cml comment create report.md
