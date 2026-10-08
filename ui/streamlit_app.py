@@ -24,7 +24,7 @@ def optional(value, missing: bool):
 
 st.set_page_config(page_title="Heart disease risk", layout="centered")
 st.title("Heart disease risk")
-st.caption("Elastic-net logistic regression on the pooled UCI data. Not a medical device.")
+st.caption("Classical ML model on the pooled UCI data. Not a medical device.")
 
 left, right = st.columns(2)
 with left:
@@ -44,6 +44,17 @@ with right:
     exang = st.radio("Exercise angina", [0, 1], format_func=lambda v: "Yes" if v else "No", horizontal=True)
     oldpeak = st.number_input("ST depression", -3.0, 7.0, 1.0, step=0.1)
     no_stress = st.checkbox("No exercise test done")
+st.subheader("Exercise test and imaging (optional)")
+c1, c2, c3 = st.columns(3)
+with c1:
+    slope = st.selectbox("ST slope at peak exercise", [None, 1, 2, 3], format_func=lambda v: {
+        None: "Not measured", 1: "Upsloping", 2: "Flat", 3: "Downsloping"}[v])
+with c2:
+    ca = st.selectbox("Major vessels seen on fluoroscopy", [None, 0, 1, 2, 3], format_func=lambda v:
+        "Not measured" if v is None else str(v))
+with c3:
+    thal = st.selectbox("Thallium stress test", [None, 3, 6, 7], format_func=lambda v: {
+        None: "Not measured", 3: "Normal", 6: "Fixed defect", 7: "Reversible defect"}[v])
 
 if st.button("Score", type="primary"):
     patient = {
@@ -53,17 +64,29 @@ if st.button("Score", type="primary"):
         "thalach": optional(thalach, no_stress),
         "exang": optional(exang, no_stress),
         "oldpeak": optional(oldpeak, no_stress),
+        "slope": None if no_stress else slope,   # slope comes from the exercise test, so no test means no slope
+        "ca": ca,
+        "thal": thal,
     }
     try:
         r = requests.post(f"{API_URL}/predict", json=patient, headers=auth_headers(), timeout=10)
-        r.raise_for_status()
-    except requests.RequestException as exc:
+    except requests.RequestException as exc:          # network problem: no response at all
         st.error(f"Could not reach the model service: {exc}")
-    else:
-        result = r.json()
-        st.metric("Probability of disease", f"{result['probability']:.1%}")
-        st.progress(min(result["probability"], 1.0))
-        st.write(f"**{result['label']}** at the operating threshold {result['threshold']:.2f} "
-                 f"(model `{r.headers.get('x-model-version', '?')}`).")
-        st.caption("The threshold comes from a 4:1 false-negative to false-positive cost "
-                   "ratio, not the default 0.5.")
+        st.stop()
+
+    if r.status_code == 422:                          # the API rejected the input: say which field and why
+        for err in r.json().get("detail", []):
+            field = ".".join(map(str, err.get("loc", [])[1:])) or "input"
+            st.error(f"{field}: {err.get('msg')}")
+        st.stop()
+    if not r.ok:                                      # anything else (403, 500, 503)
+        st.error(f"Model service returned {r.status_code}: {r.text[:200]}")
+        st.stop()
+
+    result = r.json()
+    st.metric("Probability of disease", f"{result['probability']:.1%}")
+    st.progress(min(result["probability"], 1.0))
+    st.write(f"**{result['label']}** at the operating threshold {result['threshold']:.2f} "
+             f"(model `{r.headers.get('x-model-version', '?')}`).")
+    st.caption("The threshold comes from a 4:1 false-negative to false-positive cost "
+               "ratio, not the default 0.5.")

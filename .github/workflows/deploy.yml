@@ -3,6 +3,12 @@ name: deploy
 on:
   push:
     branches: [main]
+    paths-ignore: #skipping the changes whcih are not related to the model or deployment
+      - '**.md'
+      - 'docs/**'
+      - 'scripts/**'
+      - 'notebooks/**'
+      - 'ops/dashboard.json'
   workflow_dispatch:
 
 permissions:
