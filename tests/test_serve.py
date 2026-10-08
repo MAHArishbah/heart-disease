@@ -163,9 +163,11 @@ def test_age_outside_its_range_is_rejected(client, age):
 
 
 def test_valid_boundary_values_are_accepted(client):
-    for sex in (0, 1):
-        assert client.post("/predict", json={"age": 1, "sex": sex}).status_code == 200
-    assert client.post("/predict", json={"age": 120, "sex": 1}).status_code == 200
+    young_max = {"age": 18, "sex": 0, "cp": 1, "trestbps": 0, "chol": 0, "thalach": 230, "oldpeak": -3}
+    old_min   = {"age": 120, "sex": 1, "cp": 4, "trestbps": 250, "chol": 700, "thalach": 50, "oldpeak": 7}
+    for body in (young_max, old_min):
+        r = client.post("/predict", json=body)
+        assert r.status_code == 200, r.json()
 
 
 def test_the_rest_of_the_battery_stays_optional(client):
@@ -222,3 +224,42 @@ def test_health_reports_the_model_version(client):
     body=client.get('/health').json()
     assert body['model_version']== serve.MODEL_VERSION
 
+def test_predict_rejects_impossible_values(client):
+    r = client.post("/predict", json={"age": 1, "sex": 1, "cp": 0, "thalach": 0})
+    assert r.status_code == 422
+
+def test_predict_rejects_impossible_combination(client):
+    r = client.post("/predict", json={"age": 70, "sex": 1, "thalach": 225})
+    assert r.status_code == 422
+    assert "thalach" in r.text
+
+def test_low_information_is_flagged(client):
+    r = client.post("/predict", json={"age": 55, "sex": 1})
+    assert r.status_code == 200
+    assert "x-low-information" in r.headers
+
+def test_enough_information_is_not_flagged(client):
+    r = client.post("/predict", json={"age": 55, "sex": 1, "cp": 4, "thalach": 150, "oldpeak": 1.0})
+    assert "x-low-information" not in r.headers
+
+# File: tests/test_serve.py · add
+def test_batch_too_large_is_rejected(client):
+    rows = [{"age": 55, "sex": 1}] * (serve.MAX_BATCH + 1)
+    assert client.post("/predict_batch", json=rows).status_code == 422
+
+def test_empty_batch_is_rejected(client):
+    assert client.post("/predict_batch", json=[]).status_code == 422
+
+
+import numpy as np
+
+class _BrokenModel:
+    def predict_proba(self, frame):
+        return np.tile([0.5, np.nan], (len(frame), 1))
+
+@needs_model
+def test_invalid_model_output_returns_500(client, monkeypatch):
+    serve.load_artifacts()                               # make sure the real spec is cached
+    monkeypatch.setattr(serve, "_MODEL", _BrokenModel())
+    r = client.post("/predict", json={"age": 55, "sex": 1})
+    assert r.status_code == 500

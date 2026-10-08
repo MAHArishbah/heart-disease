@@ -2,12 +2,6 @@
 
     uvicorn disease_pred.serve:app --reload
 
-There is almost nothing to reimplement here, and that is the point. Cell 28
-built a ColumnTransformer and cells 36-37 wrapped it with the estimator in a
-Pipeline, so model.joblib takes *raw* columns and returns a probability. No
-imputation, scaling or encoding is redone at request time -- doing so with
-values recomputed from incoming rows would be train/serve skew.
-
 Two guards on the design matrix:
   1. the preprocessor uses remainder='drop', so an unexpected column cannot be
      appended to the design matrix and silently break coefficient alignment;
@@ -16,26 +10,33 @@ Two guards on the design matrix:
      NaN for the fitted imputer to fill.
 
 The threshold comes from feature_spec.json, never from a literal in this file:
-it is a fitted quantity (cell 51), so a retrain that shifts it must shift what
+it is a fitted quantity , so a retrain that shifts it must shift what
 the service serves.
 """
 
 from __future__ import annotations
 
-import json,os
-from typing import Any
+import json,os,math
+from typing import Any,Literal
 from contextlib import asynccontextmanager
 
 import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict, Field,field_validator
+from pydantic import BaseModel, ConfigDict, Field,field_validator,model_validator
 
 from .config import MODEL_PATH, SPEC_PATH
 from .data import apply_zero_rules
+import numpy as np
 
 MODEL_VERSION=os.getenv("MODEL_VERSION","dev")
 REQUIRE_MODEL=os.getenv("REQUIRE_MODEL","0")=="1"
+CLINICAL_FIELDS = ["cp", "trestbps", "chol", "fbs", "restecg", "thalach", "exang", "oldpeak", "slope", "ca", "thal"]
+MIN_CLINICAL = 3 
+MAX_BATCH=500
+
+def n_provided(p: "Patient") -> int:
+    return sum(getattr(p, f) is not None for f in CLINICAL_FIELDS)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -132,26 +133,43 @@ class Patient(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    age: float = Field(gt=0,le=120 ,description="years;required")
-    sex: float = Field( description="1 = male, 0 = female;required")
-    cp: float | None = Field(None, description="chest pain type, 1-4")
-    trestbps: float | None = Field(None, description="resting BP, mm Hg")
-    chol: float | None = Field(None, description="serum cholesterol, mg/dl")
-    fbs: float | None = Field(None, description="fasting blood sugar > 120 mg/dl")
-    restecg: float | None = Field(None, description="resting ECG result, 0-2")
-    thalach: float | None = Field(None, description="max heart rate achieved")
-    exang: float | None = Field(None, description="exercise-induced angina")
-    oldpeak: float | None = Field(None, description="ST depression vs rest")
-    slope: float | None = Field(None, description="slope of peak exercise ST")
-    ca: float | None = Field(None, description="major vessels coloured, 0-3")
-    thal: float | None = Field(None, description="3 = normal, 6 = fixed, 7 = reversible")
+    #required
+    age: float = Field(ge=18, le=120, description="years; required")
+    sex: Literal[0, 1] = Field(description="1 = male, 0 = female; required")
 
+    # categorical codes: only these values are accepted
+    cp: Literal[1, 2, 3, 4] | None = Field(None, description="chest pain: 1 typical, 2 atypical, 3 non-anginal, 4 asymptomatic")
+    fbs: Literal[0, 1] | None = Field(None, description="fasting blood sugar > 120 mg/dl: 1 yes, 0 no")
+    restecg: Literal[0, 1, 2] | None = Field(None, description="resting ECG: 0 normal, 1 ST-T abnormality, 2 LV hypertrophy")
+    exang: Literal[0, 1] | None = Field(None, description="exercise-induced angina: 1 yes, 0 no")
+    slope: Literal[1, 2, 3] | None = Field(None, description="slope of peak exercise ST: 1 up, 2 flat, 3 down")
+    ca: Literal[0, 1, 2, 3] | None = Field(None, description="major vessels coloured, 0-3")
+    thal: Literal[3, 6, 7] | None = Field(None, description="3 = normal, 6 = fixed, 7 = reversible")
+
+    # continuous measurements: physiologically possible ranges
+    trestbps: float | None = Field(None, ge=0, le=250, description="resting BP, mm Hg (0 = not measured)")
+    chol: float | None = Field(None, ge=0, le=700, description="serum cholesterol, mg/dl (0 = not measured)")
+    thalach: float | None = Field(None, ge=50, le=230, description="max heart rate achieved, bpm")
+    oldpeak: float | None = Field(None, ge=-3, le=7, description="ST depression vs rest")
+
+    @field_validator("*",mode="before")
+    @classmethod
+    def nan_to_none(cls,v):
+        """treating nan like an omitted field"""
+        return None if isinstance(v,float) and math.isnan(v) else v
+    
     @field_validator('sex')
     @classmethod
     def sex_is_binary(cls,v:float) -> float:
         if v not in (0.0,1.0):
             raise ValueError('sex must be 0(female) or 1 (male)')
         return v
+    
+    @model_validator(mode='after')
+    def plausible_comb(self):
+        if self.thalach is not None and self.thalach >260- self.age:
+            raise ValueError(f"thalach={self.thalach} is implausibly high for age={self.age}") #google says 220- age,+ 40 for generousity
+        return self
 
 
 class Prediction(BaseModel):
@@ -182,9 +200,15 @@ def to_frame(patients: list[Patient], spec: dict) -> pd.DataFrame:
 
 
 def predict_frame(frame: pd.DataFrame) -> list[Prediction]:
-    model, spec = load_artifacts()
+    model, spec = load_artifacts()    
     threshold = spec["threshold"]
     probabilities = model.predict_proba(frame)[:, 1]
+
+    #output val check 
+    if not np.all(np.isfinite(probabilities)) or np.any((probabilities <0) | (probabilities >1)):
+        log.error("invalid model output", extra={"probabilities": [float(p) for p in probabilities[:10]]})
+        raise HTTPException(status_code=500, detail="model produced an invalid probability")
+
     record(request_id_var.get(),frame,probabilities,threshold,MODEL_VERSION)
     for p in probabilities:
         SCORE.observe(float(p))
@@ -223,29 +247,39 @@ def health() -> dict:
 @app.get("/schema")
 def feature_schema() -> dict:
     """What the model actually consumes, straight from the saved spec."""
-    _, spec = load_artifacts()
+    try:
+        _, spec = load_artifacts()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "features": spec["features"],
         "dropped_high_missing": spec["dropped_high_missing"],
         "threshold": spec["threshold"],
         "cost_ratio_fn_to_fp": spec["cost_fn"] / spec["cost_fp"],
-        "required_fields": ["age", "sex"],
+        "required_fields": [n for n, f in Patient.model_fields.items() if f.is_required()],
     }
 
 
 @app.post("/predict", response_model=Prediction)
-def predict(patient: Patient) -> Prediction:
+def predict(patient: Patient,response:Response) -> Prediction:
     try:
         _, spec = load_artifacts()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    provided=n_provided(patient)
+    if provided < MIN_CLINICAL: #in headers and a warning , rather than rejection . dont want to write tests again and break Ui checkboxes
+        response.headers["x-low-information"] = f"{provided} of {len(CLINICAL_FIELDS)} clinical fields provided"
+        log.warning("low-information request", extra={"n_provided": provided})
+
     return predict_frame(to_frame([patient], spec))[0]
 
 
 @app.post("/predict_batch", response_model=list[Prediction])
 def predict_batch(patients: list[Patient]) -> list[Prediction]:
-    if not patients:
-        raise HTTPException(status_code=422, detail="empty batch")
+    # if not patients:
+    #     raise HTTPException(status_code=422, detail="empty batch")
+    if not 1<=len(patients) <= MAX_BATCH:
+        raise HTTPException(status_code=422, detail=f"send between 1 and {MAX_BATCH} patients per request, got {len(patients)}")
     try:
         _, spec = load_artifacts()
     except FileNotFoundError as exc:
