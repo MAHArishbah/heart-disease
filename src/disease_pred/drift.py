@@ -36,7 +36,8 @@ def psi(reference: pd.Series, current: pd.Series, bins: int = 10) -> float:
 def load_current() -> pd.DataFrame:
     from google.cloud import bigquery
     sql = (f"SELECT features FROM `{TABLE}` "
-           f"WHERE ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {WINDOW_DAYS} DAY)")
+           f"WHERE ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {WINDOW_DAYS} DAY) "
+           f"AND IFNULL(client,'api') != 'ui'")
     rows = bigquery.Client().query(sql).result()
     return pd.DataFrame([json.loads(r["features"]) if isinstance(r["features"], str)
                          else r["features"] for r in rows])

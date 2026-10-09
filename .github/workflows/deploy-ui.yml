@@ -1,0 +1,79 @@
+
+name: deploy-ui
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ui/**'
+      - '.github/workflows/deploy-ui.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ui
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: heart-disease-mlops-510711
+  REGION: asia-south1
+  SERVICE: heart-disease-ui
+  API_SERVICE: heart-disease
+  REPO: ml-images
+  UI_SA: sa-ui-app@heart-disease-mlops-510711.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and push
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
+          IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:${GITHUB_SHA::7}
+          docker build -t $IMAGE ui/
+          docker push $IMAGE
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Record current revision
+        run: |
+          PREV=$(gcloud run services describe $SERVICE --region=$REGION \
+                 --format='value(status.traffic[0].revisionName)' || true)
+          echo "PREV=$PREV" >> $GITHUB_ENV
+
+      - name: Deploy
+        run: |
+          API_URL=$(gcloud run services describe $API_SERVICE --region=$REGION --format='value(status.url)')
+          gcloud run deploy $SERVICE --image=$IMAGE --region=$REGION \
+            --service-account=$UI_SA \
+            --set-env-vars=API_URL=$API_URL \
+            --cpu=1 --memory=512Mi --min-instances=0 --max-instances=2 \
+            --session-affinity --quiet
+          gcloud run services update-traffic $SERVICE --region=$REGION --to-latest
+
+      - name: Smoke test
+        run: |
+          URL=$(gcloud run services describe $SERVICE --region=$REGION --format='value(status.url)')
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' $URL/_stcore/health)
+            [ "$code" = "200" ] && echo "UI healthy" && exit 0
+            sleep 5
+          done
+          echo "UI health check failed (last status $code)"; exit 1
+
+      - name: Roll back
+        if: failure() && env.PREV != ''
+        run: gcloud run services update-traffic $SERVICE --region=$REGION --to-revisions=$PREV=100

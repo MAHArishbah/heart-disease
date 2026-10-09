@@ -32,6 +32,19 @@ def score(y_true, p_hat, thresh: float = 0.5, name: str = "",split: str = "") ->
             "roc_auc": round(roc_auc_score(y_true, p_hat), 3),
             "avg_precision": round(average_precision_score(y_true, p_hat), 3),
             "brier": round(brier_score_loss(y_true, p_hat), 3)}
+def by_group(y_true, p_hat, groups: dict, thresh: float, split: str) -> list[dict]:
+    """score() per subgroup, plus FPR and calibration-in-the-large (mean p vs prevalence)."""
+    y_true = np.asarray(y_true)
+    rows = []
+    for name, mask in groups.items():
+        yt, ph = y_true[mask], p_hat[mask]
+        row = score(yt, ph, thresh, name, split)
+        row["n"] = int(mask.sum())
+        row["prevalence"] = round(float(yt.mean()), 3)
+        row["mean_p"] = round(float(ph.mean()), 3)
+        row["fpr"] = round(float((ph[yt == 0] >= thresh).mean()), 3)
+        rows.append(row)
+    return rows
 
 
 def load_artifacts():
@@ -75,6 +88,20 @@ def main() -> dict:
     report = classification_report(y_test, y_pred, digits=3)
     print()
     print(report)
+    # Per-sex view at the operating threshold. OOF covers all 688 training rows,
+    # so it is the steadier number; the test split has only ~48 women.
+    sex = lambda X: {"male": (X["sex"] == 1).values, "female": (X["sex"] == 0).values}
+    group_rows = (by_group(y_test, p_test, sex(X_test), threshold, "test")
+                  + by_group(y_train, p_oof, sex(X_train), threshold, "oof"))
+    print("\nby sex @ operating threshold")
+    cols = ["model", "split", "n", "prevalence", "mean_p", "recall", "fpr", "roc_auc", "brier"]
+    print(pd.DataFrame(group_rows)[cols].to_string(index=False))
+    g = {(r["model"], r["split"]): r for r in group_rows}
+    
+    (METRICS_PATH.parent / "subgroups.md").write_text(
+        "```\n" + pd.DataFrame(group_rows)[cols].to_string(index=False) + "\n```\n", encoding="utf-8")
+
+
 
     headline = next(r for r in rows
                     if r["split"] == "test" and r["threshold"] == round(threshold, 3))
@@ -90,6 +117,9 @@ def main() -> dict:
         "oof_auc": float(np.round(roc_auc_score(y_train, p_oof), 3)), #recomputed again , read from headline TODO
         "oof_brier": float(np.round(brier_score_loss(y_train, p_oof), 3)),
         "n_test": int(len(y_test)),
+        "recall_oof_female": g["female", "oof"]["recall"],
+        "recall_gap_oof": round(g["male", "oof"]["recall"] - g["female", "oof"]["recall"], 3),
+
     }
     METRICS_PATH.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
