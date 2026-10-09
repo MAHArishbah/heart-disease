@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from disease_pred.serve import Patient, to_frame
 
 from conftest import needs_model
 from disease_pred import serve
@@ -42,6 +43,12 @@ def test_raw_csv_rows_round_trip_through_the_service(artifacts, prepared):
     via_pipeline = model.predict_proba(prepared["X_test"].loc[idx])[:, 1]
 
     assert np.allclose(via_service, via_pipeline, atol=1e-12)
+
+def test_dropped_fields_do_not_count_as_clinical_information(client):
+    r = client.post("/predict", json={"age": 55, "sex": 1, "slope": 2, "ca": 1, "thal": 7})
+    assert r.status_code == 200
+    assert "x-low-information" in r.headers
+
 
 
 @needs_model
@@ -278,3 +285,29 @@ def test_validation_error_is_logged_and_response_unchanged(client, caplog):
     rec = next(x for x in caplog.records if x.getMessage() == "validation_failed")
     assert rec.errors[0]["loc"] == ["body", "age"]
     assert "5" not in str(rec.errors)                               # the value itself is never logged
+
+
+def test_client_header_is_recorded(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr("disease_pred.serve.record", lambda rid, c, *a: seen.append(c))
+    client.post("/predict", json={"age": 55, "sex": 1}, headers={"x-client": "ui"})
+    client.post("/predict", json={"age": 55, "sex": 1}, headers={"x-client": "evil"})
+    client.post("/predict", json={"age": 55, "sex": 1})
+    assert seen == ["ui", "api", "api"]
+
+@needs_model
+def test_explanation_adds_up_to_the_prediction(client, artifacts):
+    model, spec = artifacts
+    body = {"age": 60, "sex": 1, "cp": 4, "trestbps": 150, "chol": 280, "thalach": 120, "exang": 1, "oldpeak": 2.0}
+    r = client.post("/explain", json=body)
+    assert r.status_code == 200
+    e = r.json()
+    p = model.predict_proba(to_frame([Patient(**body)], spec))[0, 1]
+    assert np.isclose(e["base_value"] + sum(e["contributions"].values()), np.log(p / (1 - p)), atol=1e-6)
+    assert set(e["contributions"]) == set(spec["features"])       # one bar per raw feature, no slope/ca/thal
+
+
+@needs_model
+def test_explain_matches_predict(client):
+    body = {"age": 55, "sex": 1, "cp": 2}
+    assert client.post("/explain", json=body).json()["probability"] == client.post("/predict", json=body).json()["probability"]

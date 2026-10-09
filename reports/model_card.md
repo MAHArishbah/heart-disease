@@ -18,7 +18,9 @@ indicator list was narrowed to `trestbps, thalach, oldpeak`.
 | Training rows | 688 | 
 | Held-out rows | 230 |
 | Training prevalence | 0.554 |
-| Artifacts | `models/model.joblib`, `models/feature_spec.json` |
+| Training sex split | 543 men, 145 women (79% male) |
+| Artifacts | `models/model.joblib`, `models/feature_spec.json` (threshold, feature list, `design_means` for explanations), `models/reference.csv` (drift reference) |
+| Serving | private Cloud Run API (`/predict`, `/explain`), public Streamlit UI; deployed by `deploy.yml` as `<sha>-dvc` |
 
 ## Intended use
 
@@ -63,6 +65,53 @@ similar size. OOF is the lower-variance estimate of the two.
 Nested CV log-loss (diagnostics) was 0.4406 +/- 0.0368; the current
 pipeline's tuning CV log-loss is 0.450 (`reports/train_metrics.json`), inside
 that band, so the tuning estimate is not optimistically biased.
+
+## Performance by sex
+
+From `python -m disease_pred.evaluate` (`reports/subgroups.md`), at t=0.20.
+`mean_p` is the average predicted probability; comparing it with the
+prevalence is a calibration-in-the-large check.
+
+| group | split | n | prevalence | mean_p | recall | FPR | ROC AUC | Brier |
+|---|---|---|---|---|---|---|---|---|
+| men | OOF | 543 | 0.630 | 0.623 | 0.985 | 0.667 | 0.846 | 0.150 |
+| women | OOF | 145 | 0.269 | 0.297 | 0.846 | 0.349 | 0.856 | 0.122 |
+| men | test | 182 | 0.637 | 0.624 | 0.991 | 0.667 | 0.875 | 0.133 |
+| women | test | 48 | 0.229 | 0.300 | 0.909 | 0.351 | 0.862 | 0.123 |
+
+What it shows:
+
+- **Calibrated within each group.** Mean predicted risk tracks prevalence for
+  both sexes, so the probabilities mean the same thing for a man and a woman.
+- **Equal ranking quality.** AUC is 0.85-0.86 for both on OOF.
+- **Women with disease are missed more often.** OOF recall is 0.846 for women
+  against 0.985 for men: about 1 in 7 diseased women falls below the
+  threshold, against about 1 in 70 men. Under the 4:1 cost ratio a missed
+  case is the expensive error, so the harm of the gap falls on women.
+- **Healthy men are flagged more often** (FPR 0.67 vs 0.35). This follows from
+  the higher predicted risk for men and is the cheap error under the cost ratio.
+
+Holding everything else fixed and changing only `sex` from 0 to 1 raises the
+average predicted probability of the test-split women from 0.30 to 0.47.
+
+**Why `sex` is kept.** Male sex is an established cardiovascular risk factor and
+clinical risk scores model it. Its effect here is not mainly a site artifact
+(see *Is the sex effect a site proxy?* below). Removing it ("fairness through
+unawareness") would make neither group better off: calibration would break in
+both directions, and correlated inputs (`cp`, `thalach`, `oldpeak`) would carry
+part of the signal anyway, less visibly.
+
+**Caveats.** The female sample is small (145 in training, 48 in test, about 11
+of them diseased), so the test recall moves by ~0.09 per patient. Heart disease
+in women is historically under-diagnosed and often presents atypically, so some
+women labelled healthy may not have been; the labels themselves may understate
+risk in women, and this data cannot say by how much.
+
+**Tracking.** `recall_oof_female` and `recall_gap_oof` (0.139 at this version)
+are written to `reports/metrics.json` and MLflow on every run, and the full
+table is posted, collapsed, in every PR's model report. A sex-specific
+threshold would close the recall gap, but it is a policy decision and is not
+applied.
 
 ## Threshold: 0.20, and why
 
@@ -164,13 +213,67 @@ Clinically interpretable effects worth trusting: `sex` (OR 3.58), `exang`
 (OR 3.37), `oldpeak` (OR 1.69/SD), `thalach` (OR 0.69/SD, protective),
 `chol` (OR 1.27/SD).
 
+### Is the sex effect a site proxy?
+
+Sites differ in both prevalence and sex mix, so `sex` could partly stand in
+for site. An inference-only refit (`notebooks/ClassificationPrediction.ipynb`)
+added site dummies (Cleveland as reference) to the inference design, without
+the single VA-battery missingness indicator: 16 predictors, full rank, no
+separation, converged.
+
+| | sex OR [95% CI] |
+|---|---|
+| without site | 4.04 [2.37, 6.91] |
+| with site | 3.62 [2.05, 6.41] |
+
+The OR falls by 10.4% (7.8% on the log-odds scale). That sits right at the
+usual 10% change-in-estimate cutoff, so the honest reading is **at most
+marginal confounding by site**: most of the sex effect survives adjustment.
+Two supporting checks agree: the Mantel-Haenszel site-stratified OR is 3.47
+against a crude 4.62, and a Cleveland + Hungary-only adjusted OR is 4.76
+[2.45, 9.26].
+
+Site ORs against Cleveland: Hungary 0.99, Switzerland 12.5 [4.6, 34.1],
+VA 1.55.
+
+Caveat: the within-site sex estimate rests almost entirely on Cleveland and
+Hungary, which hold 133 of the 145 training women (Switzerland 8, VA 4).
+This is an inference check only; the served model is unchanged and does not
+use site (`include_site: false`).
+
 ### Other
 
 - 920 rows before deduplication, from 1988. Small, old, and not representative
   of any current population.
 - The train/test split is stratified by target only, not by site.
-- No fairness analysis beyond site. `sex` is the strongest single predictor and
-  the cohort is male-skewed; subgroup performance by sex has not been measured.
+- Subgroup performance is measured by sex only (see *Performance by sex*). Age
+  bands and sites are not reported per subgroup in the pipeline.
+
+## Explanations
+
+`/explain` (and the UI's chart) returns exact SHAP values for each prediction:
+`coef × (z − mean of z over the training rows)` in log-odds, with one-hot and
+missing-indicator columns summed back into their raw feature. The training
+means are stored as `design_means` in `feature_spec.json`.
+`base_value + sum(contributions) = logit(probability)` exactly, which
+`tests/test_serve.py` checks.
+
+Reading them correctly:
+
+- They explain **the model**, not the patient's biology. A large bar is an
+  association learned from 1980s data, not a cause.
+- A missing input is imputed with the training median or mode and can still
+  contribute. For example, a missing `cp` becomes "asymptomatic", the most
+  common and highest-risk category, and pushes the score up.
+- The baseline is the average training patient (predicted risk about 58%), not
+  a healthy person.
+
+## Monitoring
+
+In production, inputs and predictions are recorded in BigQuery and a weekly
+job measures drift (PSI per continuous feature against `models/reference.csv`,
+alert at PSI > 0.25). Traffic from the public demo UI is tagged and excluded
+from the drift window. See [docs/monitoring.md](../docs/monitoring.md).
 
 ## Ethical considerations
 
@@ -185,10 +288,12 @@ own.
 ```
 dvc repro                         # runs both stages below, skipping unchanged ones
 python -m disease_pred.train      # -> models/, reports/train_metrics.json
-python -m disease_pred.evaluate   # -> reports/metrics.json, classification_report.txt
+python -m disease_pred.evaluate   # -> reports/metrics.json, classification_report.txt, subgroups.md
 ```
 
 Seed 42 throughout. Every number above came from those commands, except the
-sections marked *diagnostics*, which came from `notebooks/02-diagnostics.ipynb`.
+sections marked *diagnostics*, which came from `notebooks/02-diagnostics.ipynb`,
+and *Is the sex effect a site proxy?*, which came from
+`notebooks/ClassificationPrediction.ipynb`.
 The OOF average precision, recall and precision are printed by
 `python -m disease_pred.evaluate` but not written to `metrics.json`.

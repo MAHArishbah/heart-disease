@@ -74,5 +74,12 @@ jobs:
             echo
             echo "### Params vs main"
             dvc params diff origin/main --all --md
+            echo
+            echo "<details><summary>Performance by sex (test + OOF)</summary>"
+            echo
+            cat reports/subgroups.md
+            echo
+            echo "</details>"
           } > report.md
-          cml comment create report.md
+          cml comment update report.md
+

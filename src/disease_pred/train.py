@@ -92,6 +92,7 @@ def main() -> dict:
 
     final_model = gs.best_estimator_
     feature_names = output_names(final_model.named_steps["pre"])
+    design_means = final_model.named_steps["pre"].transform(X_train).mean(axis=0)
 
     # 
     p_oof = oof_predictions(final_model, X_train, y_train)
@@ -120,7 +121,8 @@ def main() -> dict:
         "n_train": int(len(X_train)),
         "train_prevalence": float(y_train.mean()),
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "indicators":spec["indicators"]
+        "indicators":spec["indicators"],
+        "design_means":[float(v) for v in design_means],
     }
     # print(feature_names)
 

@@ -9,5 +9,7 @@
   "test_accuracy": 0.743,
   "oof_auc": 0.869,
   "oof_brier": 0.144,
-  "n_test": 230
+  "n_test": 230,
+  "recall_oof_female": 0.846,
+  "recall_gap_oof": 0.139
 }

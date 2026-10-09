@@ -99,7 +99,7 @@ def negatives() -> list[tuple[str, object]]:
 
 def post(base: str, path: str, body) -> tuple[int, dict, float, object]:
     req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
-                                 headers={"content-type": "application/json"})
+                                 headers={"content-type": "application/json","x-client":"sim"})
     t0 = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=30) as r:

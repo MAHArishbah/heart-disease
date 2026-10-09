@@ -37,15 +37,17 @@ import numpy as np
 
 MODEL_VERSION=os.getenv("MODEL_VERSION","dev")
 REQUIRE_MODEL=os.getenv("REQUIRE_MODEL","0")=="1"
-CLINICAL_FIELDS = ["cp", "trestbps", "chol", "fbs", "restecg", "thalach", "exang", "oldpeak", "slope", "ca", "thal"]
+CLINICAL_FIELDS = ["cp", "trestbps", "chol", "fbs", "restecg", "thalach", "exang", "oldpeak"]
 MIN_CLINICAL = 3 
 MAX_BATCH=500
-SCORED_PATHS={"/predict","/predict_batch"}
+SCORED_PATHS={"/predict","/predict_batch","/explain"}
 _MODEL: Any = None
 _SPEC: dict | None = None
 
 
 request_id_var:ContextVar[str]=ContextVar("request_id",default="-")
+KNOWN_CLIENTS = {"ui", "sim"}
+client_var: ContextVar[str] = ContextVar("client", default="api")
 
 def n_provided(p: "Patient") -> int:
     return sum(getattr(p, f) is not None for f in CLINICAL_FIELDS)
@@ -80,7 +82,10 @@ def prometheus_metrics() -> Response:
 @app.middleware("http")
 async def access_log(request: Request,call_next):
     request_id= request.headers.get("x-request-id") or uuid.uuid4().hex
+    client=request.headers.get("x-client","").lower()
+    client= client if client in KNOWN_CLIENTS else 'api'
     token=request_id_var.set(request_id)
+    client_token=client_var.set(client)
     started=time.perf_counter()
     status=500
     try:
@@ -95,6 +100,7 @@ async def access_log(request: Request,call_next):
     finally:
         log.info("request", extra={
             "request_id": request_id,
+            "client":client,
             "method": request.method,
             "path": request.url.path,
             "status": status,
@@ -104,6 +110,7 @@ async def access_log(request: Request,call_next):
             REQUESTS.labels(request.url.path,str(status),MODEL_VERSION).inc()
             LATENCY.labels(request.url.path).observe(time.perf_counter()-started)
         request_id_var.reset(token)
+        client_var.reset(client_token)
 
 def load_artifacts(force: bool = False) -> tuple[Any, dict]:
     """Load model + spec once and memoise. Raises if training has not been run."""
@@ -138,9 +145,9 @@ class Patient(BaseModel):
     fbs: Literal[0, 1] | None = Field(None, description="fasting blood sugar > 120 mg/dl: 1 yes, 0 no")
     restecg: Literal[0, 1, 2] | None = Field(None, description="resting ECG: 0 normal, 1 ST-T abnormality, 2 LV hypertrophy")
     exang: Literal[0, 1] | None = Field(None, description="exercise-induced angina: 1 yes, 0 no")
-    slope: Literal[1, 2, 3] | None = Field(None, description="slope of peak exercise ST: 1 up, 2 flat, 3 down")
-    ca: Literal[0, 1, 2, 3] | None = Field(None, description="major vessels coloured, 0-3")
-    thal: Literal[3, 6, 7] | None = Field(None, description="3 = normal, 6 = fixed, 7 = reversible")
+    slope: Literal[1, 2, 3] | None = Field(None, description="accepted but unused by the current model (dropped: >30% missing)")
+    ca: Literal[0, 1, 2, 3] | None = Field(None, description="accepted but unused by the current model (dropped: >30% missing)")
+    thal: Literal[3, 6, 7] | None = Field(None, description="accepted but unused by the current model (dropped: >30% missing)")
 
     # continuous measurements: physiologically possible ranges
     trestbps: float | None = Field(None, ge=0, le=250, description="resting BP, mm Hg (0 = not measured)")
@@ -174,6 +181,10 @@ class Prediction(BaseModel):
     flag: bool
     label: str
 
+class Explanation(Prediction):
+    base_value: float                    # log-odds of the average training patient
+    contributions: dict[str, float]      # per raw feature, log-odds; base + sum = logit(probability)
+
 
 def to_frame(patients: list[Patient], spec: dict) -> pd.DataFrame:
     """Payload -> design matrix, in the trained column order.
@@ -205,7 +216,7 @@ def predict_frame(frame: pd.DataFrame) -> list[Prediction]:
         log.error("invalid model output", extra={"probabilities": [float(p) for p in probabilities[:10]]})
         raise HTTPException(status_code=500, detail="model produced an invalid probability")
 
-    record(request_id_var.get(),frame,probabilities,threshold,MODEL_VERSION)
+    record(request_id_var.get(),client_var.get(),frame,probabilities,threshold,MODEL_VERSION)
     for p in probabilities:
         SCORE.observe(float(p))
     FLAGGED.inc(int((probabilities >= threshold).sum()))
@@ -218,6 +229,33 @@ def predict_frame(frame: pd.DataFrame) -> list[Prediction]:
         )
         for p in probabilities
     ]
+
+def raw_feature(col: str, features: list[str]) -> str:
+    """'cp_4.0' -> 'cp', 'missingindicator_thalach' -> 'thalach', 'age' -> 'age'."""
+    if col.startswith("missingindicator_"):
+        return col.removeprefix("missingindicator_")
+    for f in features:
+        if col == f or col.startswith(f + "_"):
+            return f
+    return col
+
+
+def explain_frame(frame: pd.DataFrame, model, spec: dict) -> list[tuple[float, dict[str, float]]]:
+    """Exact SHAP for a linear model, in log-odds: coef * (z - mean z over training).
+    One-hot and missing-indicator columns are summed back into the raw feature."""
+    pre, clf = model.named_steps["pre"], model.named_steps["clf"]
+    coef, means = clf.coef_[0], np.asarray(spec["design_means"])
+    base = float(clf.intercept_[0] + coef @ means)
+    phi = coef * (pre.transform(frame) - means)
+    owners = [raw_feature(c, spec["features"]) for c in spec["design_columns"]]
+    out = []
+    for row in phi:
+        contributions: dict[str, float] = {}
+        for owner, v in zip(owners, row):
+            contributions[owner] = contributions.get(owner, 0.0) + float(v)
+        out.append((base, contributions))
+    return out
+
 
 @app.get("/live")
 def live() ->dict:
@@ -256,6 +294,7 @@ def feature_schema() -> dict:
     }
 
 
+
 @app.post("/predict", response_model=Prediction)
 def predict(patient: Patient,response:Response) -> Prediction:
     try:
@@ -268,6 +307,23 @@ def predict(patient: Patient,response:Response) -> Prediction:
         log.warning("low-information request", extra={"n_provided": provided})
 
     return predict_frame(to_frame([patient], spec))[0]
+
+@app.post("/explain", response_model=Explanation)
+def explain(patient: Patient, response: Response) -> Explanation:
+    try:
+        model, spec = load_artifacts()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if "design_means" not in spec:       # older model: fail loudly rather than explain wrongly
+        raise HTTPException(status_code=503, detail="model was trained without design_means; retrain to enable /explain")
+    provided = n_provided(patient)
+    if provided < MIN_CLINICAL:
+        response.headers["x-low-information"] = f"{provided} of {len(CLINICAL_FIELDS)} clinical fields provided"
+    frame = to_frame([patient], spec)
+    prediction = predict_frame(frame)[0]          # still logged to BigQuery + metered
+    base, contributions = explain_frame(frame, model, spec)[0]
+    return Explanation(**prediction.model_dump(), base_value=base, contributions=contributions)
+
 
 
 @app.post("/predict_batch", response_model=list[Prediction])

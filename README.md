@@ -1,6 +1,6 @@
 # Heart disease risk: cost-weighted screening model
 
-An end-to-end ML project covering a calibrated logistic regression model on the four-site UCI heart-disease data, a reproducible DVC pipeline, MLflow tracking and registry, PR checks in CI, and a containerised FastAPI service with structured logs and prediction records in BigQuery.
+An end-to-end ML project covering a calibrated logistic regression model on the four-site UCI heart-disease data, a reproducible DVC pipeline, MLflow tracking and registry, PR checks in CI, automated deploys to Cloud Run, a Streamlit UI that explains each prediction, and production monitoring (structured logs, prediction records in BigQuery, a 5xx alert and a weekly drift check).
 The decision threshold comes from an explicit cost ratio, not 0.5.
 
 ```mermaid
@@ -29,11 +29,21 @@ Quote **OOF**, not test, as the headline number.
 
 Per-class precision and recall are in `reports/classification_report.txt`.
 
+**By sex** (OOF, t = 0.20, from `reports/subgroups.md`). The training data is 79% male.
+
+| | n | Disease rate | Mean predicted | Recall | False-positive rate | ROC AUC |
+|---|---|---|---|---|---|---|
+| Men | 543 | 0.630 | 0.623 | **0.985** | 0.667 | 0.846 |
+| Women | 145 | 0.269 | 0.297 | **0.846** | 0.349 | 0.856 |
+
+Predictions are calibrated within each group and rank equally well, but about 1 in 7 women with disease is missed, against about 1 in 70 men.
+The gap (`recall_gap_oof` = 0.139) is written to `metrics.json` on every run. Why `sex` stays in the model is explained in [the model card](reports/model_card.md#performance-by-sex).
+
 ---
 
 ## For reviewers
 
-**Stack:** Python 3.14, scikit-learn, FastAPI, DVC (GCS remote), MLflow, GitHub Actions + CML, Docker, Google Cloud (Workload Identity Federation, Artifact Registry, Cloud Run, BigQuery, Cloud Logging).
+**Stack:** Python 3.14, scikit-learn, FastAPI, Streamlit, DVC (GCS remote), MLflow, GitHub Actions + CML, Docker, Google Cloud (Workload Identity Federation, Artifact Registry, Cloud Run services and jobs, Cloud Scheduler, BigQuery, Cloud Logging, Cloud Monitoring).
 
 **Highlights.** Each claim points to the code or test behind it:
 
@@ -46,12 +56,17 @@ Per-class precision and recall are in `reports/classification_report.txt`.
 | **Reproducibility and a regression gate.** `dvc.lock` pins data, code and params. Every PR re-runs the pipeline, fails if test AUC drops by more than 0.02, and posts a metrics/params diff. | `dvc.yaml`, `.github/workflows/ci.yml` |
 | **CI without key files.** GitHub OIDC is exchanged via Workload Identity Federation; there are no service account keys in secrets. | `ci.yml` (`id-token: write`, `google-github-actions/auth`) |
 | **Observability.** JSON logs with request ids and model version. Prediction log lines carry an input hash only; full rows go to BigQuery. | `logging_conf.py`, `predlog.py`, `serve.py` middleware |
+| **Automated deploy with rollback.** Merging to `main` builds a `<sha>-dvc` image from the model files the commit pins, deploys it privately to Cloud Run, smoke-tests it with an ID token and routes traffic back to the previous revision if anything fails. | `.github/workflows/deploy.yml` (section 9) |
+| **Monitoring, alerting and drift.** A dashboard of request rate, p95 latency, 5xx rate and drift runs; an email alert on a sustained 5xx rate; a weekly Cloud Run job that computes PSI between the training reference and the last 7 days of BigQuery rows. | Section 10, [docs/monitoring.md](docs/monitoring.md) |
+| **Explained predictions in a public UI.** `/explain` returns exact per-feature SHAP values (closed form for a linear model, no `shap` dependency in the image); the Streamlit UI charts them. The UI is public, the API stays private. | `serve.explain_frame()`; `tests/test_serve.py::test_explanation_adds_up_to_the_prediction`; `ui/` |
+| **Performance by sex is measured, not assumed.** Recall, false-positive rate and calibration per sex are computed on every run and shown in the PR comment. | `evaluate.by_group()`; [model card](reports/model_card.md#performance-by-sex) |
 
 **Topics worth discussing:**
 - Why OOF and not test is the reported number.
 - Missingness acting as a site proxy, and why the `chol`/`fbs` indicators were dropped.
 - Why cluster-robust SEs with 4 clusters were rejected (a negative result, see the model card).
-- The DVC-in-CI vs registry-for-release split (section 10).
+- The DVC-in-CI vs registry-for-release split (section 11).
+- Why `sex` raises the score, and why removing it would not make the model fairer.
 - What is still manual ([Known gaps and next steps](#known-gaps-and-next-steps)).
 
 **Quickest way to run it.** The DVC remote is private. Without access, put the four `processed.*.data` files from the public [UCI Heart Disease dataset](https://archive.ics.uci.edu/dataset/45/heart+disease) into `data/raw/heart+disease/`, then run the following after the setup in section 4:
@@ -128,15 +143,21 @@ flowchart LR
     pr["Pull request → main"] --> ci["GitHub Actions ci.yml<br/>dvc pull + repro, pytest,<br/>AUC guard, CML comment"]
     remote --> ci
     mlflow -. "manual: @champion version → build/model/" .-> image["Docker image<br/>#lt;sha#gt;-m#lt;version#gt;"]
-    outs -. "manual: copy → build/model/" .-> image2["Docker image<br/>#lt;sha#gt;-dvc"]
+    merge["Merge → main"] --> deploy["deploy.yml<br/>dvc pull train, build,<br/>deploy, smoke test, rollback"]
+    remote --> deploy
+    deploy --> image2["Docker image<br/>#lt;sha#gt;-dvc"]
     image -. "manual push" .-> ar[("Artifact Registry")]
-    image2 -. "manual push" .-> ar
-    ar -. "manual deploy" .-> run["Cloud Run<br/>FastAPI service"]
-    run -->|"one row per prediction"| bq[("BigQuery<br/>$PREDICTIONS_TABLE")]
+    image2 --> ar
+    ar --> run["Cloud Run (private)<br/>FastAPI service"]
+    ui["Cloud Run (public)<br/>Streamlit UI"] -->|"/explain + ID token"| run
+    run -->|"one row per prediction"| bq[("BigQuery<br/>serving.predictions")]
     run -->|"JSON logs on stdout"| logs["Cloud Logging"]
+    logs --> mon["Log-based metrics,<br/>dashboard, 5xx alert"]
+    sched["Cloud Scheduler<br/>Mon 06:00 IST"] --> drift["drift-check job<br/>(same image)"]
+    bq --> drift
 ```
 
-Solid arrows are implemented in this repo. Dashed arrows are done by hand today; see [Known gaps](#known-gaps-and-next-steps).
+Solid arrows are automated in this repo. Dashed arrows are done by hand; see [Known gaps](#known-gaps-and-next-steps).
 
 ---
 
@@ -152,22 +173,30 @@ src/disease_pred/config.py     paths, params.yaml loader, seed, shared Stratifie
 src/disease_pred/data.py       load_raw, apply_zero_rules, clean, select_features, split, prepare
 src/disease_pred/features.py   build_preprocessor (the ColumnTransformer), output_names
 src/disease_pred/train.py      grid search, cost_threshold, OOF predictions; writes models/ + train_metrics.json
-src/disease_pred/evaluate.py   test-set scoring; writes metrics.json + classification_report.txt; calls tracking
+src/disease_pred/evaluate.py   test-set and per-sex scoring; writes metrics.json, classification_report.txt, subgroups.md; calls tracking
 src/disease_pred/tracking.py   MLflow logging and model registration (skipped if MLFLOW_TRACKING_URI is unset)
-src/disease_pred/serve.py      FastAPI app: /live, /health, /schema, /predict, /predict_batch
+src/disease_pred/serve.py      FastAPI app: /live, /health, /schema, /metrics, /predict, /predict_batch, /explain
 src/disease_pred/predlog.py    per-prediction records: hashed log line + optional BigQuery insert
+src/disease_pred/metrics.py    Prometheus counters and histograms behind /metrics
+src/disease_pred/drift.py      weekly drift check: PSI of live BigQuery rows vs models/reference.csv
 src/disease_pred/logging_conf.py  JSON log formatter (severity, service, model_version) for Cloud Logging
 tests/                         pytest suite for data, features, train, evaluate, serve, notebooks
 notebooks/                     01-eda, 02-diagnostics, 03-shap (+ the original ClassificationPrediction.ipynb)
-models/                        model.joblib, feature_spec.json (DVC outputs, not in git)
-reports/                       metrics.json, train_metrics.json, classification_report.txt, model_card.md
-build/model/                   model files the Docker image copies in (gitignored, filled by hand)
+models/                        model.joblib, feature_spec.json, reference.csv (DVC outputs, not in git)
+reports/                       metrics.json, train_metrics.json, classification_report.txt, subgroups.md, model_card.md
+build/model/                   model files the Docker image copies in (gitignored; filled by deploy.yml or by hand)
 Dockerfile                     two-stage serving image, non-root, port 8080
-.dockerignore                  keeps data, notebooks, tests, reports and .dvc out of the build context
+.dockerignore                  keeps data, notebooks, tests, reports, ui and .dvc out of the build context
 requirements.txt               everything: train, serve, DVC, MLflow, notebooks, tests (used locally and in CI)
 requirements-serve.txt         fully pinned serving-only deps (used by the Dockerfile)
 pyproject.toml                 package metadata; pytest config (pythonpath = src, tests)
+ui/                            Streamlit app, its Dockerfile and requirements
+ops/                           log-based latency metric and the 5xx alert policy (gcloud configs)
+docs/monitoring.md             logs, BigQuery, metrics, alert, drift job and dashboard, with the commands that built them
+scripts/simulateTraffic.py     sends happy, sparse, invalid and batch traffic to a running API and checks the responses
 .github/workflows/ci.yml       PR checks: dvc pull + repro, tests, AUC guard, CML report
+.github/workflows/deploy.yml   on merge to main: build <sha>-dvc, deploy the API, smoke test, roll back on failure
+.github/workflows/deploy-ui.yml  on merge to main (ui/ changes): build and deploy the Streamlit UI
 ```
 
 ---
@@ -222,7 +251,7 @@ The pipeline has two stages (`dvc.yaml`):
 | Stage | Command | Writes |
 |---|---|---|
 | `train` | `python -m disease_pred.train` | `models/model.joblib`, `models/feature_spec.json`, `reports/train_metrics.json` |
-| `evaluate` | `python -m disease_pred.evaluate` | `reports/metrics.json`, `reports/classification_report.txt` (+ MLflow run if configured) |
+| `evaluate` | `python -m disease_pred.evaluate` | `reports/metrics.json`, `reports/classification_report.txt`, `reports/subgroups.md` (+ MLflow run if configured) |
 
 **What `dvc.lock` pins.** For each stage, it records the md5 of:
 - `data/raw` (the four site files plus `heart-disease.names`, `nfiles: 5`)
@@ -231,7 +260,7 @@ The pipeline has two stages (`dvc.yaml`):
 - every output
 
 `dvc repro` skips a stage when none of these changed.
-`reports/*.json` and `classification_report.txt` are `cache: false`. That means they are committed to git, which is what lets CI diff them against `main`.
+`reports/*.json`, `classification_report.txt` and `subgroups.md` are `cache: false`. That means they are committed to git, which is what lets CI diff them against `main`.
 
 **Order of operations when you change data, code or params:**
 
@@ -287,9 +316,9 @@ CI runs on every pull request into `main`. The job:
 5. Runs `dvc pull data/raw` then `dvc repro`, which retrains and re-evaluates from the pinned data.
 6. Runs the tests: `python -m pytest -q --ignore=tests/test_notebooks.py`.
 7. **Regression guard.** Fails the PR if `test_auc` in the freshly reproduced `reports/metrics.json` is more than **0.02** below the `test_auc` committed on `origin/main`. It is skipped if `main` has no metrics yet.
-8. **CML report.** This step always runs, even after a failure. It posts a PR comment with `dvc metrics diff origin/main` and `dvc params diff origin/main` as Markdown tables.
+8. **CML report.** This step always runs, even after a failure. It writes `dvc metrics diff origin/main` and `dvc params diff origin/main` as Markdown tables, plus the per-sex table from `reports/subgroups.md` in a collapsed section. `cml comment update` keeps a single report comment per PR and edits it on each push.
 
-CI doesn't talk to MLflow and doesn't build or push images.
+CI doesn't talk to MLflow and doesn't build or push images; deploys happen in `deploy.yml` after the merge (section 9).
 
 ---
 
@@ -306,13 +335,30 @@ uvicorn disease_pred.serve:app --reload        # http://127.0.0.1:8000/docs
 | `/health` | GET | `status`, `threshold`, `n_features`, `trained_at`, `model_version`. Returns **503** if the model files are missing. |
 | `/schema` | GET | Features the model consumes, dropped columns, threshold, `cost_ratio_fn_to_fp`, `required_fields` (`age`, `sex`). |
 | `/predict` | POST | One patient → `{probability, threshold, flag, label}`. |
-| `/predict_batch` | POST | A list of patients → a list of predictions. If any row is invalid, the whole batch is rejected with 422 naming the row index. An empty list is also rejected with 422. |
+| `/predict_batch` | POST | A list of 1–500 patients → a list of predictions. If any row is invalid, the whole batch is rejected with 422 naming the row index. |
+| `/explain` | POST | One patient → the `/predict` fields plus `base_value` and `contributions` (see below). Returns **503** if the model's spec has no `design_means`. |
+| `/metrics` | GET | Prometheus counters and histograms: requests by path/status/model version, latency, score distribution, flagged count. Hidden from `/docs`. |
 
 **Input rules:**
-- `age` and `sex` are required: `0 < age ≤ 120` and `sex ∈ {0, 1}`.
+- `age` and `sex` are required: `18 ≤ age ≤ 120` and `sex ∈ {0, 1}`.
 - Every other field is optional. Missing values are filled by the fitted imputer.
-- Unknown keys are ignored.
+- Unknown keys are **rejected** with 422, so a misspelt field can't be silently dropped and imputed.
+- Implausible combinations are rejected, e.g. a max heart rate above `260 − age`.
 - `chol = 0` and `trestbps = 0` are treated as missing, the same as in training.
+- `slope`, `ca` and `thal` are accepted for backward compatibility but unused (dropped at training).
+- Fewer than 3 of the 8 clinical fields still scores, but sets the response header `x-low-information`.
+
+Every schema-validation 422 is logged as `validation_failed` with the field names and reasons, never the submitted values.
+
+**Explanations (`/explain`).** For a linear model, exact SHAP values have a closed form: `coef × (z − mean of z over training)`, in log-odds.
+`train.py` saves the training means of the design matrix (`design_means`) in `feature_spec.json`, so the service needs no `shap` dependency.
+One-hot and missing-indicator columns are summed back into the raw feature they came from, giving one contribution per input.
+`base_value + Σ contributions = logit(probability)` exactly; `tests/test_serve.py` checks this against `predict_proba`.
+A missing input is imputed, so it can still contribute: for example, a missing `cp` is filled with the training mode (asymptomatic), which raises the score.
+
+`/explain` scores through the same `predict_frame` as `/predict`, so a call is logged and metered exactly once. The UI calls only `/explain`.
+
+**Client tag.** Callers may send `x-client: ui` or `x-client: sim`; anything else is recorded as `api`. The tag goes into logs and BigQuery so UI and simulated traffic can be separated from real API traffic (the drift check currently excludes `ui`).
 
 ```bash
 # WSL, any terminal, while uvicorn is running
@@ -326,12 +372,12 @@ curl -s -X POST localhost:8000/predict -H 'content-type: application/json' \
 - `service` (Cloud Run's `K_SERVICE`, or `local`)
 - `model_version`
 
-Each request logs `request_id`, `method`, `path`, `status` and `latency_ms`.
+Each request logs `request_id`, `client`, `method`, `path`, `status` and `latency_ms`.
 The request id comes from an incoming `x-request-id` header or is generated. It is returned in `x-request-id` together with `x-model-version`.
 
 **Prediction records.** For each scored row, `predlog.record()`:
 - logs a line with a 16-char SHA-256 hash of the inputs, the probability, the flag and the count of missing fields. The raw inputs are not logged.
-- if `PREDICTIONS_TABLE` is set, inserts a row into that BigQuery table with these columns: `request_id`, `ts`, `model_version`, `probability`, `flag`, `features` (the input row as JSON).
+- if `PREDICTIONS_TABLE` is set, inserts a row into that BigQuery table with these columns: `request_id`, `client`, `ts`, `model_version`, `probability`, `flag`, `features` (the input row as JSON).
 
 Insert errors are logged, not raised.
 
@@ -355,12 +401,12 @@ The `Dockerfile` has two stages:
 
 The image runs as a non-root user (uid 10001), sets `REQUIRE_MODEL=1` and serves uvicorn on `$PORT` (default 8080).
 
-`build/model/` is gitignored and filled by hand. That choice decides which tag the image gets:
+`build/model/` is gitignored. What fills it decides which tag the image gets:
 
-| Tag | Model source | How it's done today |
+| Tag | Model source | How it's done |
 |---|---|---|
+| `<sha>-dvc` | The DVC pipeline outputs in `models/` at commit `<sha>` | **Automated** by `deploy.yml` on every merge to `main` (below). |
 | `<sha>-m<version>` | MLflow registered model version `<version>` of `heart-disease-logreg` (the `@champion`) | **Manual.** Download that version's `model.joblib` and `feature_spec.json` from the registry into `build/model/` (with the version number in `build/model/VERSION`), then build. |
-| `<sha>-dvc` | The DVC pipeline outputs in `models/` at commit `<sha>` | **Manual.** Copy `models/` into `build/model/`, then build. CI does not build images yet. |
 
 `<sha>` is the git commit the image is built from.
 
@@ -380,17 +426,47 @@ docker run --rm -p 8080:8080 -e MODEL_VERSION=$(git rev-parse --short HEAD)-dvc 
 curl -s localhost:8080/health
 ```
 
-**Release (manual).** The image is tagged for Artifact Registry, pushed, and deployed to Cloud Run by hand.
-The Cloud Run service sets these variables:
-- `MODEL_VERSION`, matching the image tag
-- `PREDICTIONS_TABLE`
+**Automated API deploy (`.github/workflows/deploy.yml`).** Runs on every push to `main` except docs-, UI-, script- and notebook-only changes:
 
-Its service account needs insert access to that BigQuery table.
-None of this is scripted in the repo yet.
+1. Authenticates with Workload Identity Federation (deploy service account).
+2. `dvc pull train` fetches exactly the `model.joblib`, `feature_spec.json` and `reference.csv` that `dvc.lock` pins. There is no retraining at deploy time.
+3. Builds and pushes `<sha>-dvc` to Artifact Registry.
+4. Records the revision currently serving, then deploys the new image to the Cloud Run service `heart-disease`: private (`--no-allow-unauthenticated`), `sa-serving` identity, 1 CPU / 512 MiB, 0–4 instances, concurrency 40, 30 s timeout, `MODEL_VERSION=<sha>-dvc` and `PREDICTIONS_TABLE` set.
+5. Smoke-tests `/health`, `/metrics` and `/predict` with a Google ID token.
+6. Points the `drift-check` job at the new image, so drift is always measured against the reference shipped with the live model.
+7. If any step after the deploy fails, routes 100% of traffic back to the previous revision.
+
+**Automated UI deploy (`.github/workflows/deploy-ui.yml`).** Runs when `ui/` changes on `main`. It builds the Streamlit image, deploys it as the public Cloud Run service `heart-disease-ui` with the API's URL in `API_URL`, checks `/_stcore/health`, and rolls back on failure.
 
 ---
 
-## 10. Design decisions
+## 10. Monitoring and the UI
+
+![Cloud Monitoring dashboard: request rate, p95 latency, 5xx rate, drift-check runs and the app log](docs/dasboard.png)
+
+| Signal | Where | Notes |
+|---|---|---|
+| Request rate by response class | Cloud Run `request_count` | the dashboard's top-left chart |
+| p95 `/predict` latency | log-based metric `predict_latency` (from `latency_ms` in the access log) | percentiles are bucket estimates; exact values are in the log lines |
+| 5xx rate + **alert** | log-based metric `predict_errors`; policy `ops/alert-errors.yaml` | emails when 5xx exceed 1/min for 5 min; the email carries a short runbook |
+| Prediction records | BigQuery `serving.predictions`, one row per scored patient | joins to the logs on `request_id`; `client` separates UI, simulator and API traffic |
+| **Drift** | Cloud Run job `drift-check`, run by Cloud Scheduler every Monday 06:00 IST | PSI per continuous feature, last 7 days vs `models/reference.csv`; exit 1 (a "failed" run) means PSI > 0.25 |
+| App metrics | `/metrics` (Prometheus) | kept for portability; Cloud Run instances scale to zero, so nothing scrapes them there |
+
+[docs/monitoring.md](docs/monitoring.md) has every log line, query, metric, policy and job, the commands that created them, and a worked incident walk-through.
+
+`scripts/simulateTraffic.py` exercises a running API with real patients, sparse payloads, invalid payloads and batches, checks each response code and header, and tags its traffic `x-client: sim`.
+
+**The UI (`ui/streamlit_app.py`).** A form of the ten clinical inputs, with "not measured" options that send `null`. Scoring calls `/explain` on the private API with an ID token minted for the UI's service account (`sa-ui-app`, whose only role is `run.invoker` on the API). It shows:
+- the probability, the flag and the operating threshold, with the model version from the response header;
+- a bar chart of each input's contribution in log-odds, red for raising risk and blue for lowering it, with a tooltip saying whether the input was provided or imputed;
+- the exact payload sent, so what was scored is always visible.
+
+Out-of-range inputs are blocked in the browser; the API rejects them independently with 422.
+
+---
+
+## 11. Design decisions
 
 **DVC in CI, the registry for release builds.**
 CI answers one question: *does this commit reproduce, and did it make the model worse?*
@@ -398,7 +474,7 @@ It does that from the pinned data hash, code and params alone, with no dependenc
 A release image answers a different question: *is the thing serving exactly the thing that was reviewed?*
 So it takes the bytes of a specific registered version (`@champion`), and the `-m<version>` tag ties a running container back to its registry entry, run, git sha and data md5.
 `-dvc` images are built straight from the reproduced pipeline outputs.
-Because the DVC remote is reachable from GitHub Actions through WIF and MLflow is not, `-dvc` is the path chosen for automated deploys (planned; see [Known gaps](#known-gaps-and-next-steps)).
+Because the DVC remote is reachable from GitHub Actions through WIF and MLflow is not, `-dvc` is the path used for automated deploys (`deploy.yml`, section 9).
 Exposing MLflow publicly just so a runner could download a model was ruled out, so registry builds stay manual from a machine with tunnel access.
 
 **Workload Identity Federation instead of key files.**
@@ -424,42 +500,53 @@ A retrain that changes it can't leave the service on a stale cut-off.
 **`age` and `sex` are mandatory.**
 They were present in all 920 source rows, so the imputer never learned a real policy for them. A missing age would be scored as the training median.
 
+**`sex` stays in the model.**
+Male sex raises the score (odds ratio 4.04, or 3.62 after adjusting for site; see the model card). That matches the data and clinical risk scores, and predictions are calibrated within each sex.
+The measured problem runs the other way: women with disease are missed more often (OOF recall 0.846 vs 0.985).
+Dropping `sex` would not fix that. It would break calibration for both groups, and correlated inputs (chest pain type, max heart rate) would partly carry it anyway, only less visibly.
+So the feature stays, and the gap is measured on every run and shown in every PR.
+
+**A public UI in front of a private API.**
+The API accepts only callers with `run.invoker`: the deploy account and the UI's service account. The UI is open to anyone.
+That keeps the API off the public internet while still giving reviewers a working link. The trade-off is that the UI's traffic reaches BigQuery, so it is tagged `client=ui` and excluded from the drift window.
+
+**Exact SHAP in the service, without `shap`.**
+For a linear model in log-odds, SHAP values against an independent background are `coef × (z − E[z])`. Storing `E[z]` in the spec makes explanations a few lines of NumPy, exact, and consistent with the served model. This was checked against `shap.LinearExplainer` using the full training background.
+
 ---
 
 ## Known gaps and next steps
 
 Each item is the next action, followed by where things stand today. They are in rough priority order.
 
-**1. Close the release loop**
-1. **Automate the Cloud Run deploy from DVC outputs (in progress).** On merge to `main`, a workflow will:
-   - authenticate with Workload Identity Federation, as CI does
-   - run `dvc pull` / `dvc repro`
-   - copy `models/` into `build/model/`
-   - build and push `<sha>-dvc` to Artifact Registry
-   - deploy it to Cloud Run with `MODEL_VERSION=<sha>-dvc` and `PREDICTIONS_TABLE` set
-   - smoke-test `/health`
+Done since the last revision of this list: automated API and UI deploys with rollback (section 9), `/metrics`, the 5xx alert, the weekly drift job, the dashboard (section 10), explanations and per-sex evaluation.
 
-   The automated path uses DVC rather than the MLflow registry because a GitHub-hosted runner can only download from MLflow if the server is exposed to the public internet. The DVC remote is a GCS bucket the runner can already reach through WIF.
-   *Today:* builds and deploys are manual; no deploy workflow is in the repo yet.
-2. **Script the registry build for manual releases.** Run it from a developer machine with the SSH tunnel open. It resolves `heart-disease-logreg@champion`, downloads `model.joblib` and `feature_spec.json` into `build/model/`, writes `build/model/VERSION`, and builds `<sha>-m<version>`.
+**1. Release**
+1. **Script the registry build for manual releases.** Run it from a developer machine with the SSH tunnel open. It resolves `heart-disease-logreg@champion`, downloads `model.joblib` and `feature_spec.json` into `build/model/`, writes `build/model/VERSION`, and builds `<sha>-m<version>`.
    *Today:* done by hand; no script in the repo.
-3. **Make promotion a reviewed step.** Move `@champion` only when the run's metrics clear the same AUC guard CI uses.
+2. **Make promotion a reviewed step.** Move `@champion` only when the run's metrics clear the same AUC guard CI uses.
    *Today:* the alias is set by hand; `tracking.py` only registers versions.
+3. **Smoke-test `/explain` in `deploy.yml`,** so a model whose spec lacks `design_means` fails the deploy and rolls back.
+   *Today:* only `/health`, `/metrics` and `/predict` are checked.
 
 **2. Production hardening**
 
 4. **Move BigQuery inserts off the request path,** using a background task or a queue, so a slow insert can't add latency to `/predict`.
    *Today:* synchronous inside the request (TODO in `predlog.py`).
-5. **Check the BigQuery table schema into the repo,** with the columns `predlog.record()` writes, so the table can be recreated.
-   *Today:* no schema or DDL in the repo.
-6. **Expose a `/metrics` endpoint** with request latency, prediction counts and the flag rate, which is an early drift signal.
-   *Today:* `prometheus_client` is pinned in `requirements-serve.txt` but unused.
-7. **Write a short MLflow access runbook** for opening the SSH tunnel and setting `MLFLOW_TRACKING_URI`.
+5. **Check the BigQuery table schema into the repo as a file,** with the columns `predlog.record()` writes.
+   *Today:* the `bq mk` command is in `docs/monitoring.md`; the `client` column was added later with `ALTER TABLE`.
+6. **Rate-limit the public UI** (or put it behind Identity-Aware Proxy).
+   *Today:* cost is bounded only by Cloud Run's max-instances (UI 2, API 4).
+7. **Make the drift filter configurable** (`DRIFT_EXCLUDE_CLIENTS`), so a production deployment includes UI traffic while the public demo excludes it.
+   *Today:* `client = 'ui'` is excluded in code.
+8. **Write a short MLflow access runbook** for opening the SSH tunnel and setting `MLFLOW_TRACKING_URI`.
    *Today:* the host and port are not documented in the repo.
 
 **3. Model and housekeeping**
 
-8. **Re-run `02-diagnostics.ipynb`** against the current indicator set and refresh the leave-one-site-out AUCs and odds ratios in the model card.
-   *Today:* those numbers predate the indicator change.
-9. **Make `tests/test_notebooks.py` pass and add it back to CI.** Move `ClassificationPrediction.ipynb` out of `notebooks/` (the test expects exactly three notebooks) and delete the empty code cells in `01-eda` and `03-shap`.
-   *Today:* the file fails locally and CI skips it.
+9. **Investigate the recall gap for women** (0.846 vs 0.985 OOF). Options include a sex-specific threshold, which is a policy decision, not a modelling detail; with 48 women in the test split, any change needs more data to validate.
+   *Today:* measured and reported on every run; no mitigation.
+10. **Re-run `02-diagnostics.ipynb`** against the current indicator set and refresh the leave-one-site-out AUCs and odds ratios in the model card.
+    *Today:* those numbers predate the indicator change.
+11. **Make `tests/test_notebooks.py` pass and add it back to CI.** Move `ClassificationPrediction.ipynb` out of `notebooks/` (the test expects exactly three notebooks) and delete the empty code cells in `01-eda` and `03-shap`.
+    *Today:* the file fails locally and CI skips it.

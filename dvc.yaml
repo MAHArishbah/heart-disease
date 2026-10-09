@@ -44,3 +44,5 @@ stages:
     outs:
       - reports/classification_report.txt:
           cache: false
+      - reports/subgroups.md:
+          cache: false
