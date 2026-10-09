@@ -267,3 +267,14 @@ def test_unknown_field_is_rejected(client):
     r = client.post("/predict", json={"age": 55, "sex": 1, "thalch": 150})   # misspelled thalach
     assert r.status_code == 422
     assert "thalch" in r.text
+
+import logging
+
+def test_validation_error_is_logged_and_response_unchanged(client, caplog):
+    with caplog.at_level(logging.WARNING, logger="disease_pred.serve"):
+        r = client.post("/predict", json={"age": 5, "sex": 1})
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["loc"] == ["body", "age"]          # same body clients always got
+    rec = next(x for x in caplog.records if x.getMessage() == "validation_failed")
+    assert rec.errors[0]["loc"] == ["body", "age"]
+    assert "5" not in str(rec.errors)                               # the value itself is never logged

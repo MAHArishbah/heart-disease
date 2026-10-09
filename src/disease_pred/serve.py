@@ -19,12 +19,18 @@ from __future__ import annotations
 import json,os,math
 from typing import Any,Literal
 from contextlib import asynccontextmanager
-
+import logging,time,uuid
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException,Request,Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from pydantic import BaseModel, ConfigDict, Field,field_validator,model_validator
-
+from .logging_conf import configure_logging
+from contextvars import ContextVar
+from .predlog import record
+from prometheus_client import CONTENT_TYPE_LATEST,generate_latest
+from .metrics import FLAGGED,LATENCY,REQUESTS,SCORE
 from .config import MODEL_PATH, SPEC_PATH
 from .data import apply_zero_rules
 import numpy as np
@@ -34,6 +40,12 @@ REQUIRE_MODEL=os.getenv("REQUIRE_MODEL","0")=="1"
 CLINICAL_FIELDS = ["cp", "trestbps", "chol", "fbs", "restecg", "thalach", "exang", "oldpeak", "slope", "ca", "thal"]
 MIN_CLINICAL = 3 
 MAX_BATCH=500
+SCORED_PATHS={"/predict","/predict_batch"}
+_MODEL: Any = None
+_SPEC: dict | None = None
+
+
+request_id_var:ContextVar[str]=ContextVar("request_id",default="-")
 
 def n_provided(p: "Patient") -> int:
     return sum(getattr(p, f) is not None for f in CLINICAL_FIELDS)
@@ -49,29 +61,21 @@ app = FastAPI(
     description="Cost-weighted screening model over the UCI heart-disease battery.",
     version="1.0.0",
 )
+configure_logging()
+log=logging.getLogger("disease_pred.serve")
 
-import logging,time,uuid
-from contextvars import ContextVar
-from fastapi import Request
+@app.exception_handler(RequestValidationError)
+async def log_validation_error(request:Request,exc: RequestValidationError):
+    """logging which fields failed and why , not the values, then returns fastapi's normal 422"""
+    errors= [{"loc":[str(p) for p in e["loc"]],"type":e["type"],"msg":e["msg"]} for e in exc.errors()]
+    log.warning("validation_failed",extra={"request_id":request_id_var.get(),"path":request.url.path,"errors":errors})
+    return await request_validation_exception_handler(request,exc)
 
-from .logging_conf import configure_logging
-from .predlog import record
-
-from fastapi import Response
-from prometheus_client import CONTENT_TYPE_LATEST,generate_latest
-from .metrics import FLAGGED,LATENCY,REQUESTS,SCORE
-
-SCORED_PATHS={"/predict","/predict_batch"}
 
 @app.get("/metrics",include_in_schema=False)
 def prometheus_metrics() -> Response:
     return Response(generate_latest(),media_type=CONTENT_TYPE_LATEST)
 
-
-configure_logging()
-log=logging.getLogger("disease_pred.serve")
-
-request_id_var:ContextVar[str]=ContextVar("request_id",default="-")
 
 @app.middleware("http")
 async def access_log(request: Request,call_next):
@@ -100,14 +104,6 @@ async def access_log(request: Request,call_next):
             REQUESTS.labels(request.url.path,str(status),MODEL_VERSION).inc()
             LATENCY.labels(request.url.path).observe(time.perf_counter()-started)
         request_id_var.reset(token)
-
-
-
-
-
-_MODEL: Any = None
-_SPEC: dict | None = None
-
 
 def load_artifacts(force: bool = False) -> tuple[Any, dict]:
     """Load model + spec once and memoise. Raises if training has not been run."""
