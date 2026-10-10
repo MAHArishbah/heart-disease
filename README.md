@@ -64,6 +64,7 @@ The gap (`recall_gap_oof` = 0.139) is written to `metrics.json` on every run. Wh
 **Topics worth discussing:**
 - Why OOF and not test is the reported number.
 - Missingness acting as a site proxy, and why the `chol`/`fbs` indicators were dropped.
+- Why XGBoost's significant test-set win was rejected: an ablation traced it to missingness acting as a site proxy.
 - Why cluster-robust SEs with 4 clusters were rejected (a negative result, see the model card).
 - The DVC-in-CI vs registry-for-release split (section 11).
 - Why `sex` raises the score, and why removing it would not make the model fairer.
@@ -513,6 +514,10 @@ That keeps the API off the public internet while still giving reviewers a workin
 **Exact SHAP in the service, without `shap`.**
 For a linear model in log-odds, SHAP values against an independent background are `coef × (z − E[z])`. Storing `E[z]` in the spec makes explanations a few lines of NumPy, exact, and consistent with the served model. This was checked against `shap.LinearExplainer` using the full training background.
 
+**Logistic regression over gradient boosting.**
+XGBoost (with the same preprocessing, and with native NaN/categorical handling) was tuned and compared in `notebooks/compareModels.ipynb`. It tied with LR on OOF and test AUC/Brier under paired bootstrap tests, and ranked last under leave-one-site-out (mean AUC 0.787 vs 0.797).
+Its one significant win (test log loss 0.392 vs 0.416) disappeared once `chol`/`fbs`/`exang` were imputed. It came from site-linked missingness, the same proxy the indicator set already excludes, so the simpler, interpretable model was kept.
+
 ---
 
 ## Known gaps and next steps
@@ -546,7 +551,4 @@ Done since the last revision of this list: automated API and UI deploys with rol
 
 9. **Investigate the recall gap for women** (0.846 vs 0.985 OOF). Options include a sex-specific threshold, which is a policy decision, not a modelling detail; with 48 women in the test split, any change needs more data to validate.
    *Today:* measured and reported on every run; no mitigation.
-10. **Re-run `02-diagnostics.ipynb`** against the current indicator set and refresh the leave-one-site-out AUCs and odds ratios in the model card.
-    *Today:* those numbers predate the indicator change.
-11. **Make `tests/test_notebooks.py` pass and add it back to CI.** Move `ClassificationPrediction.ipynb` out of `notebooks/` (the test expects exactly three notebooks) and delete the empty code cells in `01-eda` and `03-shap`.
-    *Today:* the file fails locally and CI skips it.
+
