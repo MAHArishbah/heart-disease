@@ -140,6 +140,11 @@ stages:
       md5: 1c43914b6a665536e62f8835d04700f9
       size: 5685
       isexec: true
+    - path: src/disease_pred/features.py
+      hash: md5
+      md5: 8c0d1155110e73c66612d50ebf23729c
+      size: 2096
+      isexec: true
     - path: src/disease_pred/tracking.py
       hash: md5
       md5: d40eab7e7a3a974e0424cad3bb7e7f62
