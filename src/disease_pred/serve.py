@@ -15,7 +15,6 @@ the service serves.
 """
 
 from __future__ import annotations
-
 import json,os,math
 from typing import Any,Literal
 from contextlib import asynccontextmanager
@@ -35,6 +34,7 @@ from .config import MODEL_PATH, SPEC_PATH
 from .data import apply_zero_rules
 import numpy as np
 
+#Module Settings
 MODEL_VERSION=os.getenv("MODEL_VERSION","dev")
 REQUIRE_MODEL=os.getenv("REQUIRE_MODEL","0")=="1"
 CLINICAL_FIELDS = ["cp", "trestbps", "chol", "fbs", "restecg", "thalach", "exang", "oldpeak"]
@@ -43,13 +43,12 @@ MAX_BATCH=500
 SCORED_PATHS={"/predict","/predict_batch","/explain"}
 _MODEL: Any = None
 _SPEC: dict | None = None
-
-
-request_id_var:ContextVar[str]=ContextVar("request_id",default="-")
 KNOWN_CLIENTS = {"ui", "sim"}
+request_id_var:ContextVar[str]=ContextVar("request_id",default="-")
 client_var: ContextVar[str] = ContextVar("client", default="api")
 
 def n_provided(p: "Patient") -> int:
+    """returns the number of fields provided in request"""
     return sum(getattr(p, f) is not None for f in CLINICAL_FIELDS)
 
 @asynccontextmanager
@@ -61,7 +60,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Heart disease risk",
     description="Cost-weighted screening model over the UCI heart-disease battery.",
-    version="1.0.0",
+    version=MODEL_VERSION,
+    lifespan=lifespan,
 )
 configure_logging()
 log=logging.getLogger("disease_pred.serve")
@@ -130,8 +130,7 @@ class Patient(BaseModel):
     """One raw record, exactly as it appears in the source CSVs.
     required columns: age,sex
     every other column is optional: the fitted imputer is the model's own answer to
-    missing data .Unknown keys are ignored rather than
-    rejected -- the reindex below is what decides the design matrix.
+    missing data .Unknown keys are rejected -- the reindex below is what decides the design matrix.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -161,12 +160,12 @@ class Patient(BaseModel):
         """treating nan like an omitted field"""
         return None if isinstance(v,float) and math.isnan(v) else v
     
-    @field_validator('sex')
-    @classmethod
-    def sex_is_binary(cls,v:float) -> float:
-        if v not in (0.0,1.0):
-            raise ValueError('sex must be 0(female) or 1 (male)')
-        return v
+    # @field_validator('sex') NOW ENFORCED VIA FIELD LITERAL
+    # @classmethod
+    # def sex_is_binary(cls,v:float) -> float:
+    #     if v not in (0.0,1.0):
+    #         raise ValueError('sex must be 0(female) or 1 (male)')
+    #     return v
     
     @model_validator(mode='after')
     def plausible_comb(self):
@@ -202,7 +201,7 @@ def to_frame(patients: list[Patient], spec: dict) -> pd.DataFrame:
     """
     frame = pd.DataFrame([p.model_dump() for p in patients],
                          columns=list(Patient.model_fields))
-    frame = frame.astype("float64")
+    frame = frame.astype("float64") #missing fields arrive as none, changing to real NaN
     return apply_zero_rules(frame).reindex(columns=spec["features"])
 
 
@@ -259,7 +258,7 @@ def explain_frame(frame: pd.DataFrame, model, spec: dict) -> list[tuple[float, d
 
 @app.get("/live")
 def live() ->dict:
-    """Liveness: the process is up. Deliberately checks nothing else."""
+    """Liveness: the process is up. Deliberately checks nothing else to avoid inf loop of pod restrating."""
     return {'status':'alive'}
 
 
