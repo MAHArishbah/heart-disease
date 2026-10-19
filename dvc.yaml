@@ -13,14 +13,14 @@ stages:
       - data
       - features
       - model
-      - decision
+      - decision #not needed in eval as it will take from specs.json
     outs:
       - models/model.joblib
       - models/feature_spec.json
-      - models/reference.csv
+      - models/reference.csv #for dirft monitoring 
     metrics:
       - reports/train_metrics.json:
-          cache: false
+          cache: false #false keeps them in git so ci can run diff with origin/main without downloaing anything
 
   evaluate:
     cmd: python -m disease_pred.evaluate
@@ -30,9 +30,10 @@ stages:
       - models/feature_spec.json
       - src/disease_pred/config.py
       - src/disease_pred/data.py
-      - src/disease_pred/train.py
+      - src/disease_pred/train.py #imports oof_predictions from train.py
       - src/disease_pred/evaluate.py
       - src/disease_pred/tracking.py
+      - src/disease_pred/features.py #is indirect dependecy through train.py
     params:
       - seed
       - data

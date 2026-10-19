@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0 # full history, so origin/main exists to diff against
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.14 #wsl minor version
+          python-version: "3.14" #wsl minor version
           cache: "pip"
       - uses: google-github-actions/auth@v2
         with:
